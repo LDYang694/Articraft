@@ -29,7 +29,12 @@ from pxr import (  # pyright: ignore[reportAttributeAccessIssue]
 from articraft.sdk import ambientcg
 from articraft.sdk._collision import MeshCollisionKernel, _rpy_matrix
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
-from articraft.sdk.joints import Articulation, ArticulationType, MotionLimits
+from articraft.sdk.joints import (
+    Articulation,
+    ArticulationType,
+    MotionLimits,
+    partition_articulations,
+)
 from articraft.sdk.mass import ResolvedMass, resolve_mass
 from articraft.sdk.materials import Material, is_library_material
 from articraft.sdk.object import ArticulatedObject, Geometry, Part
@@ -230,7 +235,9 @@ def _write_parts(
     asset_dir: Path | None = None,
 ) -> tuple[dict[str, str], TextureExportReport, dict[str, dict[str, object]]]:
     UsdGeom.Scope.Define(stage, scope_path)
-    transforms = MeshCollisionKernel(obj, mesh_tolerance=mesh_tolerance).world_transforms({})
+    # Bake at the authored zero pose, drives unresolved: joint value zero must
+    # stay the baked pose so limits, sliders, and MJCF qpos0 line up.
+    transforms = MeshCollisionKernel(obj, mesh_tolerance=mesh_tolerance)._place({})
     safe_part_names = _safe_name_map(part.name for part in obj.parts)
     paths: dict[str, str] = {}
     masses: dict[str, dict[str, object]] = {}
@@ -668,12 +675,42 @@ def _write_articulations(
 ) -> None:
     UsdGeom.Scope.Define(stage, scope_path)
     safe_names = _safe_name_map(item.name for item in obj.articulations)
+    _tree, loops = partition_articulations(obj.articulations)
+    loop_names = {item.name for item in loops}
+    kernel = MeshCollisionKernel(obj, mesh_tolerance=DEFAULT_MESH_TOLERANCE)
+    rest = kernel._place({})
+    resolved = kernel._resolve_drives({})
+    for articulation in obj.articulations:
+        if articulation.drive is None:
+            continue
+        value = resolved.get(articulation.name, 0.0)
+        if abs(value) > 1e-3:
+            raise ValueError(
+                f"driven articulation {articulation.name!r} solves to {value:.4f} at the "
+                "rest pose; zero must be the assembled pose, so fold the rest angle into "
+                "the joint origin's rpy or the rest gap into the drive's rest_length"
+            )
     for articulation in obj.articulations:
         schema = _articulation_schema(
             stage, f"{scope_path}/{safe_names[articulation.name]}", articulation
         )
         schema.CreateBody0Rel().SetTargets([part_paths[articulation.parent]])
         schema.CreateBody1Rel().SetTargets([part_paths[articulation.child]])
+        if articulation.name in loop_names:
+            # USD articulations are trees, but a regular joint outside the
+            # articulation may close a loop. The solver still enforces it.
+            schema.CreateExcludeFromArticulationAttr(True)
+            # A tree child's frame sits on its joint, so localPos1 = 0 there.
+            # A loop child's frame belongs to its tree parent, so the pin must
+            # be located in that frame explicitly or engines snap the child's
+            # origin onto the pin.
+            axis_rot = _axis_matrix(articulation.axis)
+            local0 = axis_rot * _gf_matrix(_rpy_matrix(articulation.origin.rpy))
+            frame0 = local0 * Gf.Matrix4d(1.0).SetTranslateOnly(Gf.Vec3d(*articulation.origin.xyz))
+            world = frame0 * _gf_matrix(rest[articulation.parent])
+            frame1 = world * _gf_matrix(np.linalg.inv(rest[articulation.child]))
+            schema.CreateLocalPos1Attr(Gf.Vec3f(frame1.ExtractTranslation()))
+            schema.CreateLocalRot1Attr(_quat(frame1))
         _articulation_attrs(schema.GetPrim(), articulation)
 
 
@@ -723,6 +760,7 @@ def _articulation_attrs(prim: Usd.Prim, articulation: Articulation) -> None:
         "parent": articulation.parent,
         "child": articulation.child,
         "axis": Gf.Vec3d(*articulation.axis),
+        "driven": "true" if articulation.drive is not None else "false",
         "origin:xyz": Gf.Vec3d(*articulation.origin.xyz),
         "origin:rpy": Gf.Vec3d(*articulation.origin.rpy),
     }
@@ -793,6 +831,7 @@ def _object_to_payload(
     obj: ArticulatedObject, masses: dict[str, dict[str, object]] | None = None
 ) -> dict[str, object]:
     masses = masses or {}
+    loop_names = {loop.name for loop in partition_articulations(obj.articulations)[1]}
     return {
         "name": obj.name,
         "units": "meters",
@@ -829,6 +868,8 @@ def _object_to_payload(
                 "origin": {"xyz": item.origin.xyz, "rpy": item.origin.rpy},
                 "axis": item.axis,
                 "motion_limits": _limits(item.motion_limits),
+                "closes_loop": item.name in loop_names,
+                "driven": item.drive is not None,
             }
             for item in obj.articulations
         ],
@@ -979,7 +1020,7 @@ def _audit_usdz(
     normal_meshes = 0
     material_bindings = 0
     source_meshes: dict[tuple[str, str], trimesh.Trimesh] = {}
-    xforms = MeshCollisionKernel(obj, mesh_tolerance=mesh_tolerance).world_transforms({})
+    xforms = MeshCollisionKernel(obj, mesh_tolerance=mesh_tolerance)._place({})
     source_points: list[np.ndarray] = []
 
     for part in obj.parts:
@@ -1078,8 +1119,13 @@ def _audit_usdz(
             f"USDZ audit articulation mismatch: expected={sorted(expected_joints)!r} "
             f"found={sorted(found_joints)!r}"
         )
+    loop_names = {loop.name for loop in partition_articulations(obj.articulations)[1]}
     for name, joint in expected_joints.items():
         prim = found_joints[name]
+        excluded_attr = prim.GetAttribute("physics:excludeFromArticulation")
+        excluded = bool(excluded_attr.Get()) if excluded_attr else False
+        if excluded != (name in loop_names):
+            raise RuntimeError(f"USDZ audit loop exclusion mismatch for {name!r}")
         if (
             _custom_string(prim, "articulationType")
             != cast(ArticulationType, joint.articulation_type).value

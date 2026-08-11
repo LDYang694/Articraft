@@ -11,11 +11,13 @@ from articraft.sdk.errors import ValidationError
 from articraft.sdk.joints import (
     Articulation,
     ArticulationType,
+    Drive,
     MotionLimits,
     Origin,
     Vec3,
     _as_name,
     _coerce_part_name,
+    partition_articulations,
 )
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Color, Material, _as_color, _as_material
@@ -213,6 +215,7 @@ class ArticulatedObject:
         origin: Origin | None = None,
         axis: Vec3 = (0.0, 0.0, 1.0),
         motion_limits: MotionLimits | None = None,
+        drive: Drive | None = None,
     ) -> Articulation:
         parent_name = _coerce_part_name(parent, field_name="parent")
         child_name = _coerce_part_name(child, field_name="child")
@@ -226,6 +229,7 @@ class ArticulatedObject:
             origin=Origin() if origin is None else origin,
             axis=axis,
             motion_limits=motion_limits,
+            drive=drive,
         )
         if any(existing.name == articulation.name for existing in self.articulations):
             raise ValidationError(f"duplicate articulation name: {articulation.name!r}")
@@ -274,8 +278,6 @@ class ArticulatedObject:
             raise ValidationError("articulation names must be unique")
 
         part_name_set = set(part_names)
-        child_to_articulation: dict[str, Articulation] = {}
-        children: dict[str, list[str]] = {name: [] for name in part_name_set}
         for articulation in self.articulations:
             if articulation.parent not in part_name_set:
                 raise ValidationError(
@@ -287,18 +289,23 @@ class ArticulatedObject:
                     f"articulation {articulation.name!r} references missing child part "
                     f"{articulation.child!r}"
                 )
-            previous = child_to_articulation.get(articulation.child)
-            if previous is not None:
-                raise ValidationError(
-                    f"part {articulation.child!r} has multiple parent articulations: "
-                    f"{previous.name!r} and {articulation.name!r}"
-                )
-            child_to_articulation[articulation.child] = articulation
+
+        # A second articulation reaching the same child closes a kinematic loop:
+        # a real pin the reduced coordinate tree cannot carry. The tree still has
+        # to be a tree; the loop closures ride along as constraints.
+        tree, _loops = partition_articulations(self.articulations)
+        child_to_articulation = {articulation.child: articulation for articulation in tree}
+        children: dict[str, list[str]] = {name: [] for name in part_name_set}
+        for articulation in tree:
             children[articulation.parent].append(articulation.child)
 
         roots = sorted(part_name_set - set(child_to_articulation))
         if not roots:
-            raise ValidationError("object has no root part")
+            raise ValidationError(
+                "object has no root part; if an articulation closes a loop, declare it "
+                "after the joints that place its parts, with the already parented part "
+                "as its child"
+            )
         if len(roots) > 1:
             raise ValidationError(f"object must have exactly one root part, found {roots}")
 
@@ -314,6 +321,43 @@ class ArticulatedObject:
             raise ValidationError(
                 f"object contains unreachable parts: {sorted(part_name_set - visited)}"
             )
+
+        # Drives resolve in a single pass against the authored pose, so a drive
+        # may only read a part whose placement no drive influences. Anything
+        # else would read a stale anchor (chained) or itself (circular).
+        driven = [item for item in self.articulations if item.drive is not None]
+        if driven:
+            subtree: dict[str, set[str]] = {}
+
+            def _descendants(name: str) -> set[str]:
+                found = subtree.get(name)
+                if found is None:
+                    found = {name}
+                    for child in children[name]:
+                        found |= _descendants(child)
+                    subtree[name] = found
+                return found
+
+            for articulation in driven:
+                assert articulation.drive is not None
+                anchor = articulation.drive.part
+                if anchor not in part_name_set:
+                    raise ValidationError(
+                        f"articulation {articulation.name!r} drive references missing part "
+                        f"{anchor!r}"
+                    )
+                if anchor in _descendants(articulation.child):
+                    raise ValidationError(
+                        f"articulation {articulation.name!r} drive reads {anchor!r}, which its "
+                        "own joint moves; a drive must read a part outside its subtree"
+                    )
+                for other in driven:
+                    if other is not articulation and anchor in _descendants(other.child):
+                        raise ValidationError(
+                            f"articulation {articulation.name!r} drive reads {anchor!r}, which "
+                            f"is placed by the driven joint {other.name!r}; drives resolve in "
+                            "one pass, so read a part no drive influences"
+                        )
 
 
 def _validate_geometry(shape: object, *, context: str) -> None:

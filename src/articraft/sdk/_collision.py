@@ -11,7 +11,13 @@ import trimesh
 
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
 from articraft.sdk.errors import ValidationError
-from articraft.sdk.joints import Articulation, ArticulationType, Origin
+from articraft.sdk.joints import (
+    Articulation,
+    ArticulationType,
+    Origin,
+    SpanTo,
+    partition_articulations,
+)
 from articraft.sdk.object import ArticulatedObject, Geometry
 
 Vec3: TypeAlias = tuple[float, float, float]
@@ -127,10 +133,69 @@ class MeshCollisionKernel:
         return self._selector_entries(part_name, shape_name, pose)[0].bounds
 
     def world_transforms(self, pose: dict[str, float]) -> dict[str, Mat4]:
+        return self._place(self._resolve_drives(pose))
+
+    def _resolve_drives(self, pose: dict[str, float]) -> dict[str, float]:
+        """Fill in the joints the mechanism decides rather than the author.
+
+        Values handed in for driven joints are discarded: the mechanism owns
+        them. Drives are solved shallowest parent first, re-placing the model
+        after each, so a driven joint hanging off another driven joint reads a
+        final frame rather than a stale one.
+        """
+
+        driven = [item for item in self.model.articulations if item.drive is not None]
+        if not driven:
+            return pose
+        resolved = {
+            name: value
+            for name, value in pose.items()
+            if name not in {item.name for item in driven}
+        }
+        tree, _loops = partition_articulations(self.model.articulations)
+        parent_of = {item.child: item.parent for item in tree}
+
+        def _depth(part: str) -> int:
+            depth = 0
+            while part in parent_of:
+                part = parent_of[part]
+                depth += 1
+            return depth
+
+        for articulation in sorted(driven, key=lambda item: _depth(item.parent)):
+            drive = articulation.drive
+            if drive is None:
+                continue
+            placed = self._place(resolved)
+            target = placed.get(drive.part)
+            frame = placed.get(articulation.parent)
+            if target is None or frame is None:
+                continue
+            joint = frame @ _origin_matrix(articulation.origin)
+            anchor = _apply(target, np.asarray(drive.point, dtype=np.float64))
+            local = _apply(np.linalg.inv(joint), anchor)
+            if isinstance(drive, SpanTo):
+                # The axial component, signed: an anchor behind the origin must
+                # retract the joint, and any perpendicular offset is the frame's
+                # business, not extra travel.
+                axial = float(np.dot(local, _normalize(articulation.axis)))
+                resolved[articulation.name] = axial - drive.rest_length
+            else:
+                resolved[articulation.name] = _angle_about(
+                    _normalize(articulation.axis),
+                    np.asarray(drive.reference, dtype=np.float64),
+                    local,
+                )
+        return resolved
+
+    def _place(self, pose: dict[str, float]) -> dict[str, Mat4]:
         parts = {part.name: part for part in self.model.parts}
         children: dict[str, list[Articulation]] = {name: [] for name in parts}
         child_names: set[str] = set()
-        for articulation in self.model.articulations:
+        # Only the spanning tree places parts. A loop closing joint is a
+        # constraint on the mechanism, not a second place to hang its child.
+        tree, _loops = partition_articulations(self.model.articulations)
+        for articulation in tree:
             if articulation.parent in parts and articulation.child in parts:
                 children[articulation.parent].append(articulation)
                 child_names.add(articulation.child)
@@ -625,6 +690,28 @@ def _axis_angle_matrix(axis: np.ndarray, angle: float) -> Mat4:
         trimesh.transformations.rotation_matrix(angle, axis),
         dtype=np.float64,
     )
+
+
+def _apply(matrix: Mat4, point: np.ndarray) -> np.ndarray:
+    return (matrix[:3, :3] @ point) + matrix[:3, 3]
+
+
+def _angle_about(axis: np.ndarray, reference: np.ndarray, target: np.ndarray) -> float:
+    """Signed rotation about ``axis`` that swings ``reference`` onto ``target``.
+
+    Both vectors are flattened into the plane the joint actually turns in, so a
+    target off the plane still gives the best in-plane answer instead of nothing.
+    """
+
+    flat_reference = reference - axis * float(np.dot(reference, axis))
+    flat_target = target - axis * float(np.dot(target, axis))
+    if np.linalg.norm(flat_reference) < 1e-12 or np.linalg.norm(flat_target) < 1e-12:
+        return 0.0
+    flat_reference = flat_reference / np.linalg.norm(flat_reference)
+    flat_target = flat_target / np.linalg.norm(flat_target)
+    cosine = float(np.clip(np.dot(flat_reference, flat_target), -1.0, 1.0))
+    sine = float(np.dot(axis, np.cross(flat_reference, flat_target)))
+    return math.atan2(sine, cosine)
 
 
 def _normalize(axis: Vec3) -> np.ndarray:
