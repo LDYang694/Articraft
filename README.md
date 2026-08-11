@@ -21,6 +21,56 @@
 > Researchers and engineers from academia and industry maintain and support this project.
 > It is under active development; expect changes before version 1.0.
 
+<details>
+<summary>The prompts behind these four objects</summary>
+
+<br>
+
+Each object above came from one prompt, with no reference image and no hand modeling.
+Naming the real construction is what earns the detail.
+
+**A folding camera tripod**
+
+> A folding camera tripod, built to look real. Three legs on a shouldered hub, each folding
+> out and each telescoping through three tapered tubes with twist lock collars and rubber
+> feet. A geared center column with a hook underneath, and a ball head on top with a quick
+> release plate, a pan lock knob, a tilt notch, and a bubble spirit level. Model the visible
+> construction: knurling on the collars, the leg angle stops, hinge lugs, and fasteners.
+> Sample the legs and column across their range and prove nothing passes through anything
+> else.
+
+**A baby grand piano**
+
+> A baby grand piano, built to look real from every angle. Include the distinctive bent side
+> and straight spine, a curved rim, the fallboard over the keys, a music desk, a full 88 key
+> keyboard with correct black key grouping, and a lyre under the keybed carrying three pedals
+> sized like real ones so they sit under the keyboard rather than jutting past the case
+> front. The lid opens on its hinge and is held by a prop stick that must fold down flat into
+> the case when the lid closes: sample the lid and prop across their whole range and prove
+> they never pass through each other. Model visible construction: hinges, the lid seam, legs
+> with real profiles, casters.
+
+**An excavator arm**
+
+> An excavator arm assembly, built to look real. A boom, a stick, and a toothed digging
+> bucket on pivot pins, plus the three hydraulic cylinders that drive them: boom cylinders on
+> the mount, a stick cylinder along the boom, and a bucket cylinder with its linkage bell
+> crank. Each cylinder is a barrel with a polished rod that extends and retracts as its joint
+> moves, staying attached at both eyes through the whole range. Include hose runs, grease
+> fittings, pin retainer plates, and weld seams along the boom box section.
+
+**A two finger robotic gripper**
+
+> A two finger robotic gripper gripping a workpiece. An anodized body with a lead screw
+> driven slider, two fingers on pivot pins driven by dogbone linkages, and replaceable jaw
+> pads with machined gripping grooves. Between the jaws sits a machined aluminium block with
+> chamfered edges: size the block and the finger travel so the pads close onto its faces and
+> hold it at the closed end of travel, and swing clear of it at the open end. Keep the
+> gripper body compact relative to the jaws so the gripping action is the obvious feature.
+> Include the motor can and gearbox, a cable gland, cap head fasteners, dowel pins, and a
+> mounting flange.
+
+</details>
 
 ## Highlights
 
@@ -248,4 +298,6 @@ Maintainers create releases with a manual workflow. Read the [release guide](doc
 
 This repository has an [Apache 2.0 License](LICENSE).
 
-<sub>This project is the successor to the original [Articraft paper](https://arxiv.org/abs/2605.15187).
+---
+
+<sub>This project is the successor to the original [Articraft paper](https://arxiv.org/abs/2605.15187).</sub>
