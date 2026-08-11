@@ -272,3 +272,71 @@ def test_prismatic_travel_is_not_reported_as_part_separation(tmp_path: Path) -> 
     positions = [frame["joints"][0] for frame in result.trajectory.frames]
     assert abs(positions[0]) > 0.005
     assert result.parts_stayed_together, result.summary()
+
+
+def test_simulate_reads_a_rigid_body_graph_stage(tmp_path) -> None:
+    """A graph export names its scope rigid_bodies, not parts."""
+
+    from articraft.sdk.assembly import JointAxis, JointDOF, JointFrame, RigidBodyAssembly
+    from articraft.sdk.export import export_assembly
+
+    assembly = RigidBodyAssembly("graph_crate")
+    base = assembly.rigid_body("base")
+    base.add(
+        BoxGeometry((0.30, 0.20, 0.10)).translate(0.0, 0.0, 0.05),
+        name="body",
+        material=Material.HARDWOOD,
+    )
+    lid = assembly.rigid_body("lid")
+    lid.add(
+        BoxGeometry((0.30, 0.20, 0.01)).translate(0.0, 0.0, 0.005),
+        name="panel",
+        material=Material.STEEL,
+    )
+    assembly.joint(
+        "lid_hinge",
+        body0=base,
+        frame0=JointFrame(xyz=(0.0, -0.10, 0.10)),
+        body1=lid,
+        frame1=JointFrame(xyz=(0.0, -0.10, 0.0)),
+        dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.5)),),
+    )
+    assembly.articulation("main", root=base, joints=["lid_hinge"])
+
+    result = export_assembly(assembly, tmp_path / "out")
+    simulated = simulate_usdz(result.usdz, tmp_path / "work", seconds=1.0)
+
+    assert set(simulated.bodies) == {"base", "lid"}
+    assert not simulated.fell_through_floor
+
+
+def test_a_multi_dof_joint_becomes_one_mjcf_joint_per_free_axis(tmp_path) -> None:
+    """MuJoCo has no six-axis joint; sibling joints compose to the same motion."""
+
+    from articraft.sdk.assembly import JointAxis, JointDOF, JointFrame, RigidBodyAssembly
+    from articraft.sdk.export import export_assembly
+
+    assembly = RigidBodyAssembly("ball")
+    post = assembly.rigid_body("post")
+    post.add(BoxGeometry((0.06, 0.06, 0.06)), name="stem", material=Material.STEEL)
+    head = assembly.rigid_body("head")
+    head.add(BoxGeometry((0.06, 0.06, 0.06)), name="plate", material=Material.STEEL)
+    assembly.joint(
+        "socket",
+        body0=post,
+        frame0=JointFrame(xyz=(0.0, 0.0, 0.06)),
+        body1=head,
+        frame1=JointFrame(),
+        dofs=tuple(
+            JointDOF(axis, limits=(-0.6, 0.6))
+            for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z)
+        ),
+    )
+    assembly.articulation("main", root=post, joints=["socket"])
+
+    result = export_assembly(assembly, tmp_path / "out")
+    model = write_mjcf(result.usdz, tmp_path / "work")
+    text = model.read_text()
+
+    assert text.count('type="hinge"') == 3
+    assert 'name="socket"' in text and 'name="socket_2"' in text and 'name="socket_3"' in text
