@@ -6,7 +6,6 @@ from articraft.sdk import (
     BoxGeometry,
     JointAxis,
     JointDOF,
-    JointFrame,
     RigidBodyAssembly,
     TestContext,
     TestReport,
@@ -26,10 +25,8 @@ def build_object_model() -> RigidBodyAssembly:
     # The frames meet: on top of the plinth, and at the arm's foot.
     model.joint(
         "base_to_arm",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.05)),
-        body1=arm,
-        frame1=JointFrame(),
+        base.at((0.0, 0.0, 0.05)),
+        arm.at(),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.8, 0.8)),),
     )
     model.articulation("main", root=base, joints=["base_to_arm"])

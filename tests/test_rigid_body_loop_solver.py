@@ -43,31 +43,26 @@ def four_bar() -> RigidBodyAssembly:
     hinge = (JointDOF(JointAxis.ROT_Y, limits=(-math.pi, math.pi)),)
     crank_pin = assembly.joint(
         "crank_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=GROUND_A),
-        body1=crank,
+        ground.at(JointFrame(xyz=GROUND_A)),
+        crank.at(),
         dofs=hinge,
     )
     coupler_pin = assembly.joint(
         "coupler_pin",
-        body0=crank,
-        frame0=JointFrame(xyz=(CRANK, 0.0, 0.0), rpy=(0.0, COUPLER_TILT, 0.0)),
-        body1=coupler,
+        crank.at(JointFrame(xyz=(CRANK, 0.0, 0.0), rpy=(0.0, COUPLER_TILT, 0.0))),
+        coupler.at(),
         dofs=hinge,
     )
     rocker_pin = assembly.joint(
         "rocker_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=GROUND_D, rpy=(0.0, -math.pi / 2.0, 0.0)),
-        body1=rocker,
+        ground.at(JointFrame(xyz=GROUND_D, rpy=(0.0, -math.pi / 2.0, 0.0))),
+        rocker.at(),
         dofs=hinge,
     )
     assembly.joint(
         "closing_pin",
-        body0=coupler,
-        frame0=JointFrame(xyz=(COUPLER, 0.0, 0.0)),
-        body1=rocker,
-        frame1=JointFrame(xyz=(ROCKER, 0.0, 0.0)),
+        coupler.at(JointFrame(xyz=(COUPLER, 0.0, 0.0))),
+        rocker.at(JointFrame(xyz=(ROCKER, 0.0, 0.0))),
         dofs=hinge,
     )
     assembly.articulation(
@@ -170,26 +165,23 @@ def _hydraulic_ram(slide_limits: tuple[float, float]) -> RigidBodyAssembly:
     ram_length = math.dist(barrel_pivot, (arm_length, 0.0, 0.0))
     ram_pitch = -math.atan2(0.4, 0.8)
     hinge = (JointDOF(JointAxis.ROT_Y, limits=(-1.0, 1.0)),)
-    arm_pin = assembly.joint("arm_pin", body0=ground, body1=arm, dofs=hinge)
+    arm_pin = assembly.joint("arm_pin", ground.at(), arm.at(), dofs=hinge)
     barrel_pin = assembly.joint(
         "barrel_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=barrel_pivot, rpy=(0.0, ram_pitch, 0.0)),
-        body1=barrel,
+        ground.at(JointFrame(xyz=barrel_pivot, rpy=(0.0, ram_pitch, 0.0))),
+        barrel.at(),
         dofs=hinge,
     )
     slide = assembly.joint(
         "slide",
-        body0=barrel,
-        body1=rod,
+        barrel.at(),
+        rod.at(),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=slide_limits),),
     )
     assembly.joint(
         "rod_eye",
-        body0=rod,
-        frame0=JointFrame(xyz=(ram_length, 0.0, 0.0)),
-        body1=arm,
-        frame1=JointFrame(xyz=(arm_length, 0.0, 0.0)),
+        rod.at(JointFrame(xyz=(ram_length, 0.0, 0.0))),
+        arm.at(JointFrame(xyz=(arm_length, 0.0, 0.0))),
         dofs=hinge,
     )
     assembly.articulation("main", root=ground, joints=(arm_pin, barrel_pin, slide))

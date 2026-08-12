@@ -96,10 +96,8 @@ def _collision_model() -> RigidBodyAssembly:
             joints.append(
                 model.joint(
                     f"joint_{index:02d}",
-                    body0=previous,
-                    frame0=JointFrame(xyz=(0.03, 0.0, 0.0)),
-                    body1=part,
-                    frame1=JointFrame(),
+                    previous.at(JointFrame(xyz=(0.03, 0.0, 0.0))),
+                    part.at(),
                 ).name
             )
         previous = part

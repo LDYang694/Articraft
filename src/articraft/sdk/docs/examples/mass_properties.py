@@ -22,7 +22,6 @@ from articraft.sdk import (
     CylinderGeometry,
     JointAxis,
     JointDOF,
-    JointFrame,
     Material,
     RigidBodyAssembly,
     RoundedBoxGeometry,
@@ -86,19 +85,11 @@ def build_object_model() -> RigidBodyAssembly:
     )
 
     # No free axes is a fixed joint: the body is welded to its base.
-    model.joint(
-        "body_to_base",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.006)),
-        body1=body_part,
-        frame1=JointFrame(),
-    )
+    model.joint("body_to_base", base.at((0.0, 0.0, 0.006)), body_part.at())
     model.joint(
         "lid_hinge",
-        body0=body_part,
-        frame0=JointFrame(xyz=(0.0, HINGE_Y, HEIGHT)),
-        body1=lid,
-        frame1=JointFrame(),
+        body_part.at((0.0, HINGE_Y, HEIGHT)),
+        lid.at(),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.9)),),
     )
     model.articulation("main", root=base, joints=["body_to_base", "lid_hinge"])

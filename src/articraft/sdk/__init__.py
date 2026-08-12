@@ -58,17 +58,16 @@ from articraft.sdk._mesh.sweeps import (
     WirePolylineGeometry,
 )
 from articraft.sdk.assembly import (
-    WORLD,
     Articulation,
     Joint,
     JointAxis,
     JointDOF,
-    JointFrame,
     PhysicsState,
     RigidBodyAssembly,
 )
 from articraft.sdk.bodies import RigidBody
 from articraft.sdk.errors import LoopClosureError, SDKError, ValidationError
+from articraft.sdk.frames import WORLD, BodyFrame, JointFrame
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Material
 from articraft.sdk.physics import EARTH_GRAVITY, BodyState, PhysicsScene
@@ -105,6 +104,7 @@ __all__ = [
     "AllowedOverlap",
     "ArcPipeGeometry",
     "Articulation",
+    "BodyFrame",
     "BodyState",
     "BoxGeometry",
     "CapsuleGeometry",

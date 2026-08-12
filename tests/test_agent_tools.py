@@ -412,14 +412,14 @@ def test_exec_command_renders_public_sdk_previews_before_compile(tmp_path) -> No
 )
 
 object_model = RigidBodyAssembly("slider")
-object_model.rigid_body("base").add(BoxGeometry((0.5, 0.5, 0.5)), name="base")
-object_model.rigid_body("slider").add(BoxGeometry((0.2, 0.2, 0.2)), name="block")
+base = object_model.rigid_body("base")
+base.add(BoxGeometry((0.5, 0.5, 0.5)), name="base")
+slider = object_model.rigid_body("slider")
+slider.add(BoxGeometry((0.2, 0.2, 0.2)), name="block")
 object_model.joint(
     "slide",
-    body0="base",
-    frame0=JointFrame(),
-    body1="slider",
-    frame1=JointFrame(),
+    base.at(),
+    slider.at(),
     dofs=(JointDOF(JointAxis.TRANS_X, limits=(0.0, 1.0)),),
 )
 

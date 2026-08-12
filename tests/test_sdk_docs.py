@@ -221,10 +221,14 @@ def test_sdk_docs_and_examples_are_package_data() -> None:
         assert pattern in package_data
 
 
-def test_all_new_sdk_examples_execute() -> None:
-    examples = package_dir / "sdk" / "docs" / "examples"
+def test_all_first_party_sdk_examples_execute() -> None:
+    repo_root = package_dir.parents[1]
+    paths = [
+        *(package_dir / "sdk" / "docs" / "examples").glob("*.py"),
+        *repo_root.glob("examples/*/main.py"),
+    ]
 
-    for path in sorted(examples.glob("*.py")):
+    for path in sorted(paths):
         values = runpy.run_path(str(path))
         model = values["object_model"]
         report = values["run_tests"]()

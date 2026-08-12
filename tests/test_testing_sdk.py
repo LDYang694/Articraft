@@ -28,13 +28,7 @@ def add_box(part, name: str, *, size: float = 1.0, x: float = 0.0) -> None:
 
 def fixed(model: RigidBodyAssembly, name: str, parent, child, xyz=(0.0, 0.0, 0.0)):
     """A joint with no free axes is a fixed joint."""
-    return model.joint(
-        name,
-        body0=parent,
-        frame0=JointFrame(xyz=xyz),
-        body1=child,
-        frame1=JointFrame(),
-    )
+    return model.joint(name, parent.at(JointFrame(xyz=xyz)), child.at(JointFrame()))
 
 
 def test_report_records_warnings_and_shape_scoped_allowances() -> None:
@@ -241,10 +235,8 @@ def test_pose_changes_prismatic_part_transform_and_restores() -> None:
     add_box(slider, "body", x=1.5)
     model.joint(
         "slide",
-        body0=base,
-        frame0=JointFrame(),
-        body1=slider,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        slider.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(-1.5, 0.0)),),
     )
     ctx = TestContext(model)
@@ -277,8 +269,8 @@ def test_pose_accepts_qualified_d6_coordinates() -> None:
     add_box(moving, "body")
     model.joint(
         "motion",
-        body0=base,
-        body1=moving,
+        base.at(),
+        moving.at(),
         dofs=(
             JointDOF(JointAxis.TRANS_X, limits=(-0.5, 0.5)),
             JointDOF(JointAxis.ROT_Z, limits=(-0.5, 0.5)),
@@ -516,8 +508,8 @@ def _swing_arm() -> RigidBodyAssembly:
     add_box(arm, "body", x=3.0)
     model.joint(
         "hinge",
-        body0=base,
-        body1=arm,
+        base.at(),
+        arm.at(),
         dofs=(JointDOF(JointAxis.ROT_Z, limits=(-1.0, 1.0)),),
     )
     model.articulation("main", root=base, joints=["hinge"])
@@ -567,10 +559,8 @@ def test_pose_sweeps_record_unreachable_loop_poses() -> None:
     arm = model.get_rigid_body("arm")
     model.joint(
         "second_pin",
-        body0=base,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=arm,
-        frame1=JointFrame(xyz=(1.0, 0.0, 0.0)),
+        base.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        arm.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
         dofs=(JointDOF(JointAxis.ROT_Z),),
     )
     context = TestContext(model)
@@ -590,8 +580,8 @@ def test_separation_check_handles_multi_dof_joints() -> None:
     add_box(moving, "body")
     model.joint(
         "wrist",
-        body0=base,
-        body1=moving,
+        base.at(),
+        moving.at(),
         dofs=(
             JointDOF(JointAxis.ROT_X, limits=(-0.4, 0.4)),
             JointDOF(JointAxis.ROT_Y, limits=(-0.4, 0.4)),

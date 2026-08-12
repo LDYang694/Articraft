@@ -67,7 +67,7 @@ Lookup helpers raise `ValidationError` when a name cannot be resolved:
 
 ```python
 body = model.get_rigid_body("body")
-shape = body.get_shape("housing")
+shape = body.shape("housing")
 joint = model.get_joint("body_to_lid")
 ```
 

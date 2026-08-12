@@ -41,28 +41,27 @@ say which axes are free: none is fixed, one rotational is a hinge, one linear is
 rotational is a ball. `model.articulation(...)` then names the tree the simulator solves.
 
 ```python
-from articraft.sdk import JointAxis, JointDOF, JointFrame
+from articraft.sdk import JointAxis, JointDOF
 
 
 lid = model.rigid_body("lid")
 lid.add(Box(0.8, 0.5, 0.02), name="panel")
 model.joint(
     "lid_hinge",
-    body0=body,
-    frame0=JointFrame(xyz=(0.0, 0.25, 0.02)),
-    body1=lid,
-    frame1=JointFrame(xyz=(0.0, 0.25, -0.01)),
+    body.at((0.0, 0.25, 0.02)),
+    lid.at((0.0, 0.25, -0.01)),
     # The hinge edge runs along X, so ROT_X; negative angles open the lid.
     dofs=(JointDOF(JointAxis.ROT_X, limits=(-1.9, 0.0)),),
 )
 model.articulation("main", root=body, joints=["lid_hinge"])
 ```
 
-Each frame is the joint *in that body's coordinates*; the two coincide at rest.
-Limits are radians or meters and must contain zero.
+`body.at(...)` accepts a point or build123d location, plane, axis, face, edge,
+or vertex. Prefer a feature over a copied coordinate. Endpoint frames coincide
+at rest. Limits use radians or meters and must contain zero.
 
-**Count the pivots.** A body pinned in two places takes two joints, which makes the mechanism a
-ring -- linkages, four-bars, grippers and scissors all are. Author every joint it has, then leave
+**Count the pivots.** A body pinned in two places takes two joints, making the mechanism a
+ring -- linkages, four-bars, grippers, scissors. Author every joint it has, then leave
 the ring-closing one out of the articulation. See `docs/sdk/common/35_joints.md`.
 
 Read only the reference that applies to the next piece of geometry:

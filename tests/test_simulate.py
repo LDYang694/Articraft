@@ -43,10 +43,8 @@ def _hinged_box(
     )
     model.joint(
         "lid_hinge",
-        body0=base,
-        frame0=JointFrame(rpy=rpy),
-        body1=lid,
-        frame1=JointFrame(),
+        base.at(JointFrame(rpy=rpy)),
+        lid.at(JointFrame()),
         dofs=(JointDOF(axis, limits=(LOWER, UPPER)),),
     )
     model.articulation("main", root=base, joints=["lid_hinge"])
@@ -182,10 +180,8 @@ def test_a_rotated_rest_pose_survives_the_translation(tmp_path: Path) -> None:
     arm.add(BoxGeometry((0.02, 0.02, 0.20)), name="post", material=Material.STEEL)
     model.joint(
         "mount",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.025), rpy=(0.0, math.pi / 4.0, 0.0)),
-        body1=arm,
-        frame1=JointFrame(),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.025), rpy=(0.0, math.pi / 4.0, 0.0))),
+        arm.at(JointFrame()),
         dofs=(),
     )
     model.articulation("main", root=base, joints=["mount"])
@@ -257,10 +253,8 @@ def test_prismatic_travel_is_not_reported_as_part_separation(tmp_path: Path) -> 
     )
     model.joint(
         "slide",
-        body0=base,
-        frame0=JointFrame(),
-        body1=body,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        body.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_Z, limits=(0.0, 0.10)),),
     )
 
@@ -298,10 +292,8 @@ def test_simulate_reads_a_rigid_body_graph_stage(tmp_path) -> None:
     )
     assembly.joint(
         "lid_hinge",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, -0.10, 0.10)),
-        body1=lid,
-        frame1=JointFrame(xyz=(0.0, -0.10, 0.0)),
+        base.at(JointFrame(xyz=(0.0, -0.10, 0.10))),
+        lid.at(JointFrame(xyz=(0.0, -0.10, 0.0))),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.5)),),
     )
     assembly.articulation("main", root=base, joints=["lid_hinge"])
@@ -326,10 +318,8 @@ def test_a_multi_dof_joint_becomes_one_mjcf_joint_per_free_axis(tmp_path) -> Non
     head.add(BoxGeometry((0.06, 0.06, 0.06)), name="plate", material=Material.STEEL)
     assembly.joint(
         "socket",
-        body0=post,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.06)),
-        body1=head,
-        frame1=JointFrame(),
+        post.at(JointFrame(xyz=(0.0, 0.0, 0.06))),
+        head.at(JointFrame()),
         dofs=tuple(
             JointDOF(axis, limits=(-0.6, 0.6))
             for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z)
@@ -361,10 +351,8 @@ def test_a_joint_authored_child_first_still_nests_under_the_root(tmp_path: Path)
     # Authored child first: the arm carries body0, the base body1.
     model.joint(
         "mount",
-        body0=arm,
-        frame0=JointFrame(),
-        body1=base,
-        frame1=JointFrame(xyz=(0.0, 0.0, 0.025)),
+        arm.at(JointFrame()),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.025))),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.5)),),
     )
     model.articulation("main", root=base, joints=["mount"])
@@ -385,14 +373,14 @@ def test_a_revolute_loop_is_preserved_as_a_mujoco_constraint(tmp_path: Path) -> 
     arm.add(BoxGeometry((0.02, 0.02, 0.2)), name="post", material=Material.STEEL)
     tree = model.joint(
         "tree_hinge",
-        body0=base,
-        body1=arm,
+        base.at(),
+        arm.at(),
         dofs=(JointDOF(JointAxis.ROT_Y),),
     )
     model.joint(
         "closing_hinge",
-        body0=base,
-        body1=arm,
+        base.at(),
+        arm.at(),
         dofs=(JointDOF(JointAxis.ROT_Y),),
     )
     model.articulation("main", root=base, joints=(tree,))
@@ -412,14 +400,14 @@ def test_an_unsupported_loop_fails_before_writing_partial_mjcf(tmp_path: Path) -
     carriage.add(BoxGeometry((0.05, 0.05, 0.05)), name="block", material=Material.STEEL)
     tree = model.joint(
         "tree_slide",
-        body0=base,
-        body1=carriage,
+        base.at(),
+        carriage.at(),
         dofs=(JointDOF(JointAxis.TRANS_X),),
     )
     model.joint(
         "closing_slide",
-        body0=base,
-        body1=carriage,
+        base.at(),
+        carriage.at(),
         dofs=(JointDOF(JointAxis.TRANS_X),),
     )
     model.articulation("main", root=base, joints=(tree,))

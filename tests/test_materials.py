@@ -36,10 +36,8 @@ def _model() -> RigidBodyAssembly:
     lid.add(BoxGeometry([0.2, 0.2, 0.02]), name="cap", color=(0.2, 0.3, 0.8))
     model.joint(
         "hinge",
-        body0=base,
-        frame0=JointFrame(),
-        body1=lid,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        lid.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Z, limits=(0.0, 1.5)),),
     )
     return model

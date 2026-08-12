@@ -28,10 +28,8 @@ def _hinged_lid(pivot: tuple[float, float, float]) -> RigidBodyAssembly:
     lid.add(BoxGeometry((0.10, 0.10, 0.02)).translate(*offset), name="lid_slab")
     model.joint(
         "lid_hinge",
-        body0=base,
-        frame0=JointFrame(xyz=pivot),
-        body1=lid,
-        frame1=JointFrame(),
+        base.at(JointFrame(xyz=pivot)),
+        lid.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.2)),),
     )
     return model
@@ -65,10 +63,8 @@ def test_separation_check_ignores_prismatic_liftoff() -> None:
     body.add(BoxGeometry((0.08, 0.08, 0.10)).translate(0.0, 0.0, 0.06), name="body_box")
     model.joint(
         "lift",
-        body0=base,
-        frame0=JointFrame(),
-        body1=body,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        body.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_Z, limits=(0.0, 0.10)),),
     )
     ctx = TestContext(model)
@@ -93,18 +89,14 @@ def test_a_loop_closing_joint_is_left_out_of_the_separation_sweep() -> None:
     swing = (JointDOF(JointAxis.ROT_X, limits=(-1.0, 1.0)),)
     model.joint(
         "left_pivot",
-        body0=body,
-        frame0=JointFrame(xyz=(-0.05, 0.0, 0.05)),
-        body1=handle,
-        frame1=JointFrame(xyz=(-0.05, 0.0, 0.05)),
+        body.at(JointFrame(xyz=(-0.05, 0.0, 0.05))),
+        handle.at(JointFrame(xyz=(-0.05, 0.0, 0.05))),
         dofs=swing,
     )
     model.joint(
         "right_pivot",
-        body0=body,
-        frame0=JointFrame(xyz=(0.05, 0.0, 0.05)),
-        body1=handle,
-        frame1=JointFrame(xyz=(0.05, 0.0, 0.05)),
+        body.at(JointFrame(xyz=(0.05, 0.0, 0.05))),
+        handle.at(JointFrame(xyz=(0.05, 0.0, 0.05))),
         dofs=swing,
     )
     model.articulation("main", root=body, joints=["left_pivot"])

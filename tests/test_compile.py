@@ -296,10 +296,8 @@ base = object_model.rigid_body("base"); base.add(Box(1, 1, 1), name="body")
 child = object_model.rigid_body("child"); child.add(Box(1, 1, 1), name="body")
 object_model.joint(
     "mount",
-    body0=base,
-    frame0=JointFrame(),
-    body1=child,
-    frame1=JointFrame(),
+    base.at(),
+    child.at(),
     dofs=(),
 )
 
@@ -399,10 +397,8 @@ shaft = object_model.rigid_body("shaft"); shaft.add(Box(1, 1, 1), name="steel")
 hub = object_model.rigid_body("hub"); hub.add(Box(1, 1, 1), name="liner")
 object_model.joint(
     "mount",
-    body0=shaft,
-    frame0=JointFrame(),
-    body1=hub,
-    frame1=JointFrame(),
+    shaft.at(),
+    hub.at(),
     dofs=(),
 )
 

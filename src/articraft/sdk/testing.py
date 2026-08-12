@@ -31,9 +31,11 @@ from articraft.sdk.assembly import (
     JointDOF,
     PhysicsState,
     RigidBodyAssembly,
+    _frame_matrix,
 )
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
 from articraft.sdk.errors import LoopClosureError, ValidationError
+from articraft.sdk.frames import BodyFrame
 from articraft.sdk.mass import resolve_mass
 from articraft.sdk.materials import LIBRARY
 
@@ -299,8 +301,8 @@ class TestContext:
         self.model.get_rigid_body(part_b_name)
         shape_a = str(shape_a).strip()
         shape_b = str(shape_b).strip()
-        self.model.get_rigid_body(part_a_name).get_shape(shape_a)
-        self.model.get_rigid_body(part_b_name).get_shape(shape_b)
+        self.model.get_rigid_body(part_a_name).shape(shape_a)
+        self.model.get_rigid_body(part_b_name).shape(shape_b)
         reason = str(reason or "").strip()
         if not reason:
             raise ValueError("allow_overlap requires a non-empty reason")
@@ -335,7 +337,7 @@ class TestContext:
         part_name = _part_name(part, field_name="part")
         model_part = self.model.get_rigid_body(part_name)
         shape_name = str(shape).strip()
-        model_part.get_shape(shape_name)
+        model_part.shape(shape_name)
         if isinstance(issues, (str, MeshHealthIssue)):
             issue_values = (MeshHealthIssue(issues),)
         else:
@@ -452,6 +454,67 @@ class TestContext:
             raise ValidationError(f"unknown part: {part_name!r}")
         world = transform @ np.asarray([*local, 1.0], dtype=np.float64)
         return (float(world[0]), float(world[1]), float(world[2]))
+
+    def expect_coincident(
+        self,
+        first: BodyFrame,
+        second: BodyFrame,
+        *,
+        position_tol: float = 1e-6,
+        angle_tol: float = 1e-6,
+        name: str | None = None,
+    ) -> bool:
+        """Check that two authored frames occupy the same world transform."""
+
+        first_world = self._world_frame_matrix(first, field_name="first")
+        second_world = self._world_frame_matrix(second, field_name="second")
+        position_tol = _non_negative(position_tol, "position_tol")
+        angle_tol = _non_negative(angle_tol, "angle_tol")
+        position_error = float(np.linalg.norm(first_world[:3, 3] - second_world[:3, 3]))
+        angle_error = _rotation_angle(first_world[:3, :3].T @ second_world[:3, :3])
+        check_name = name or (
+            f"expect_coincident({_body_frame_name(first)},{_body_frame_name(second)})"
+        )
+        return self._record(
+            check_name,
+            position_error <= position_tol and angle_error <= angle_tol,
+            f"position_error={position_error:.9g} position_tol={position_tol:.9g} "
+            f"angle_error={angle_error:.9g} angle_tol={angle_tol:.9g}",
+        )
+
+    def expect_coaxial(
+        self,
+        first: BodyFrame,
+        second: BodyFrame,
+        *,
+        axis: str = "z",
+        position_tol: float = 1e-6,
+        angle_tol: float = 1e-6,
+        name: str | None = None,
+    ) -> bool:
+        """Check that the chosen local axes lie on the same infinite world line."""
+
+        first_world = self._world_frame_matrix(first, field_name="first")
+        second_world = self._world_frame_matrix(second, field_name="second")
+        axis_name = _axis_name(axis)
+        axis_index = _axis_index(axis_name)
+        position_tol = _non_negative(position_tol, "position_tol")
+        angle_tol = _non_negative(angle_tol, "angle_tol")
+        first_axis = first_world[:3, axis_index]
+        second_axis = second_world[:3, axis_index]
+        alignment = float(np.clip(abs(first_axis @ second_axis), 0.0, 1.0))
+        angle_error = math.acos(alignment)
+        offset = second_world[:3, 3] - first_world[:3, 3]
+        radial_error = float(np.linalg.norm(offset - (offset @ first_axis) * first_axis))
+        check_name = name or (
+            f"expect_coaxial({_body_frame_name(first)},{_body_frame_name(second)},axis={axis_name})"
+        )
+        return self._record(
+            check_name,
+            radial_error <= position_tol and angle_error <= angle_tol,
+            f"radial_error={radial_error:.9g} position_tol={position_tol:.9g} "
+            f"angle_error={angle_error:.9g} angle_tol={angle_tol:.9g}",
+        )
 
     def measure_geometry(
         self,
@@ -1462,7 +1525,7 @@ class TestContext:
         if selected_part is not None:
             self.model.get_rigid_body(selected_part)
             if shape is not None:
-                self.model.get_rigid_body(selected_part).get_shape(shape)
+                self.model.get_rigid_body(selected_part).shape(shape)
         if not meshes:
             raise ValidationError("geometry selector did not match any shapes")
         return meshes
@@ -1487,7 +1550,7 @@ class TestContext:
         if selected_part is not None:
             self.model.get_rigid_body(selected_part)
             if shape is not None:
-                self.model.get_rigid_body(selected_part).get_shape(shape)
+                self.model.get_rigid_body(selected_part).shape(shape)
         if not geometries:
             raise ValidationError("geometry selector did not match any shapes")
         return geometries
@@ -1547,6 +1610,19 @@ class TestContext:
             self._kernel_cache = MeshCollisionKernel(self.model, mesh_tolerance=self.mesh_tolerance)
         return self._kernel_cache
 
+    def _world_frame_matrix(self, frame: BodyFrame, *, field_name: str) -> np.ndarray:
+        if not isinstance(frame, BodyFrame):
+            raise ValidationError(f"{field_name} must be a body.at(...) or WORLD.at(...) frame")
+        if frame.body is WORLD:
+            body_matrix = np.identity(4, dtype=np.float64)
+        else:
+            body = self.model.get_rigid_body(cast(RigidBody, frame.body))
+            if body is not frame.body:
+                raise ValidationError(f"{field_name} frame belongs to another assembly")
+            transforms = self._kernel().world_transforms(self._placement())
+            body_matrix = transforms[body.name]
+        return body_matrix @ _frame_matrix(frame.frame)
+
     def _placement(self) -> dict[str, float] | PhysicsState:
         return self._state if self._state is not None else self._pose
 
@@ -1563,6 +1639,15 @@ def _plain_name(value: object, field_name: str) -> str:
     if not name:
         raise ValidationError(f"{field_name} must be non-empty")
     return name
+
+
+def _body_frame_name(frame: BodyFrame) -> str:
+    return "WORLD" if frame.body is WORLD else cast(RigidBody, frame.body).name
+
+
+def _rotation_angle(rotation: np.ndarray) -> float:
+    cosine = float(np.clip((np.trace(rotation) - 1.0) * 0.5, -1.0, 1.0))
+    return math.acos(cosine)
 
 
 def _artifact_kind(path: Path) -> str:

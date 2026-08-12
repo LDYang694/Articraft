@@ -150,15 +150,23 @@ grippy like rubber. Add `color=` to tint one shape. For anything more, derive a
 variant with `Material.STEEL.but(roughness=0.75)` and give it a name to reuse.
 Build a new one only when the library has nothing close: `Material(name="ceramic",
 density=2400.0)`. Never encode material semantics in the shape name.
-Use `body.get_shape(name)` when a named shape is needed later. Do not invent a
+Use `body.shape(name)` when a named shape is needed later. Do not invent a
 `GeometryElement` API, and do not pass geometry to `model.rigid_body(...)`.
 
-Motion is two steps. `model.joint(...)` connects two bodies at a `JointFrame` on
-each, and its `dofs` say which axes are free: no `JointDOF` is a fixed joint, one
-rotational axis is a hinge, one linear axis is a slide, three rotational axes are
-a ball. Then `model.articulation(root=..., joints=[...])` names the spanning tree
-the simulator solves. Use the exact signatures in the current SDK docs. Do not
-use build123d joints to describe articraft motion.
+Motion is two steps. `body.at(...)` binds a point or a build123d `Location`,
+`Plane`, `Axis`, face, edge, or vertex to that body. Prefer geometry features:
+they survive dimension changes and avoid copied coordinate arithmetic.
+The feature's natural axis becomes frame-local Z: an axis direction, a flat
+face's normal, a straight edge's tangent, or a round feature's axis of
+symmetry (a cylindrical face or hole rim anchors the hinge that spins about it).
+`model.joint(name, body0.at(...), body1.at(...), dofs=...)` connects two bound
+frames. No `JointDOF` is fixed, one rotational axis is a hinge, one linear axis
+is a slide, and three rotational axes are a ball. Then
+`model.articulation(root=..., joints=[...])` names the spanning tree the
+simulator solves. Use `model.frame_in(frame, other_body)` when the same physical
+frame must be expressed on another body, especially for loop closures. Use the
+exact signatures in the current SDK docs. Do not use build123d joints to
+describe articraft motion.
 
 Count the pivots before writing joints. A body pinned in two places takes two
 joints, and that makes the mechanism a ring rather than a chain -- linkages,
@@ -167,11 +175,12 @@ Author every joint the mechanism physically has, then leave the ring-closing one
 out of the articulation. Authoring a ring as a chain is a modelling error: the
 bodies export and then flap loose under simulation.
 
-The two frames of a joint coincide at rest, so place each in its own body's
-coordinates. All linear values are meters. Use radians for `JointFrame.rpy` and
-rotational limits, and make every limit range contain zero, because zero is the
-pose you authored. Use the same meter scale for build123d coordinates, mesh helper inputs,
-prismatic travel, and test distances.
+The two bound frames of a joint coincide at rest. All linear values are meters.
+Use radians for explicit `JointFrame.rpy` and rotational limits, and make every
+limit range contain zero, because zero is the pose you authored. Build123d
+locations keep build123d's degree convention and are converted exactly by
+`body.at(...)`. Use the same meter scale for build123d coordinates, mesh helper
+inputs, prismatic travel, and test distances.
 </authoring_contract>
 
 <testing>
