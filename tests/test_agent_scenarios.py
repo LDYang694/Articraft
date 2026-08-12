@@ -57,10 +57,8 @@ def build_object_model() -> RigidBodyAssembly:
     pin.add(Box(0.05, 0.05, 0.2), name="body")
     model.joint(
         "press_fit_pin",
-        body0=base,
-        frame0=JointFrame(),
-        body1=pin,
-        frame1=JointFrame(),
+        base.at(),
+        pin.at(),
     )
     return model
 

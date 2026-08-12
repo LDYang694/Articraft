@@ -59,7 +59,7 @@ def test_part_accepts_multiple_named_shapes_and_preserves_local_placement() -> N
     assert body.add(shell, name="shell", color=(0.7, 0.1, 0.1)) is shell
     body.add(trim, name="trim", color=(0.8, 0.8, 0.8, 0.5))
 
-    stored_shell = body.get_shape("shell")
+    stored_shell = body.shape("shell")
     assert stored_shell is shell
     assert isinstance(stored_shell, Shape)
     assert pytest.approx(0.4) == stored_shell.bounding_box().min.X
@@ -76,7 +76,7 @@ def test_part_accepts_mesh_geometry() -> None:
 
     body.add(mesh, name="procedural")
 
-    assert body.get_shape("procedural") is mesh
+    assert body.shape("procedural") is mesh
     model.validate()
 
 
@@ -94,7 +94,7 @@ def test_shape_names_are_required_and_unique_within_each_part() -> None:
     with pytest.raises(ValidationError, match="duplicate shape name"):
         left.add(box(), name="body")
     with pytest.raises(ValidationError, match="unknown shape"):
-        left.get_shape("missing")
+        left.shape("missing")
 
 
 @pytest.mark.parametrize(
@@ -143,35 +143,23 @@ def test_public_joint_grammar_covers_fixed_hinge_free_and_slide() -> None:
     rotor = add_box(model, "rotor")
     slider = add_box(model, "slider")
 
-    model.joint(
-        "root_to_fixed",
-        body0=root,
-        frame0=JointFrame(),
-        body1=fixed,
-        frame1=JointFrame(),
-    )
+    model.joint("root_to_fixed", root.at(JointFrame()), fixed.at(JointFrame()))
     revolute = model.joint(
         "fixed_to_hinge",
-        body0=fixed,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.2)),
-        body1=hinge,
-        frame1=JointFrame(),
+        fixed.at(JointFrame(xyz=(0.0, 0.0, 0.2))),
+        hinge.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-math.pi / 4.0, math.pi / 4.0)),),
     )
     model.joint(
         "hinge_to_rotor",
-        body0=hinge,
-        frame0=JointFrame(),
-        body1=rotor,
-        frame1=JointFrame(),
+        hinge.at(JointFrame()),
+        rotor.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Z),),
     )
     model.joint(
         "rotor_to_slider",
-        body0=rotor,
-        frame0=JointFrame(),
-        body1=slider,
-        frame1=JointFrame(),
+        rotor.at(JointFrame()),
+        slider.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.02, 0.2)),),
     )
 
@@ -213,20 +201,12 @@ def test_the_graph_model_rules_are_validated() -> None:
     with pytest.raises(ValidationError, match="duplicate DOF axes"):
         model.joint(
             "twice",
-            body0=root,
-            frame0=JointFrame(),
-            body1=child,
-            frame1=JointFrame(),
+            root.at(JointFrame()),
+            child.at(JointFrame()),
             dofs=(JointDOF(JointAxis.ROT_Z), JointDOF(JointAxis.ROT_Z)),
         )
     with pytest.raises(ValidationError, match="endpoints cannot be the same"):
-        model.joint(
-            "itself",
-            body0=root,
-            frame0=JointFrame(),
-            body1=root,
-            frame1=JointFrame(),
-        )
+        model.joint("itself", root.at(JointFrame()), root.at(JointFrame()))
 
 
 def test_the_graph_must_be_one_connected_whole() -> None:
@@ -244,9 +224,9 @@ def test_a_second_joint_into_a_body_closes_a_loop() -> None:
     base = add_box(model, "base")
     upper = add_box(model, "upper")
     brace = add_box(model, "brace")
-    model.joint("base_upper", body0=base, frame0=JointFrame(), body1=upper, frame1=JointFrame())
-    model.joint("base_brace", body0=base, frame0=JointFrame(), body1=brace, frame1=JointFrame())
-    model.joint("upper_brace", body0=upper, frame0=JointFrame(), body1=brace, frame1=JointFrame())
+    model.joint("base_upper", base.at(JointFrame()), upper.at(JointFrame()))
+    model.joint("base_brace", base.at(JointFrame()), brace.at(JointFrame()))
+    model.joint("upper_brace", upper.at(JointFrame()), brace.at(JointFrame()))
     model.articulation("main", root=base, joints=["base_upper", "base_brace"])
 
     resolved = model.resolve()
@@ -261,9 +241,9 @@ def test_an_articulation_must_select_a_tree() -> None:
     base = add_box(model, "base")
     upper = add_box(model, "upper")
     brace = add_box(model, "brace")
-    model.joint("base_upper", body0=base, frame0=JointFrame(), body1=upper, frame1=JointFrame())
-    model.joint("base_brace", body0=base, frame0=JointFrame(), body1=brace, frame1=JointFrame())
-    model.joint("upper_brace", body0=upper, frame0=JointFrame(), body1=brace, frame1=JointFrame())
+    model.joint("base_upper", base.at(JointFrame()), upper.at(JointFrame()))
+    model.joint("base_brace", base.at(JointFrame()), brace.at(JointFrame()))
+    model.joint("upper_brace", upper.at(JointFrame()), brace.at(JointFrame()))
     # all three edges is the ring itself, not a spanning tree
     model.articulation("main", root=base, joints=["base_upper", "base_brace", "upper_brace"])
 
@@ -278,11 +258,13 @@ def test_duplicate_and_unknown_names_are_rejected() -> None:
 
     with pytest.raises(ValidationError, match="duplicate rigid body name"):
         model.rigid_body("root")
-    model.joint("connection", body0=root, frame0=JointFrame(), body1=child, frame1=JointFrame())
+    model.joint("connection", root.at(JointFrame()), child.at(JointFrame()))
     with pytest.raises(ValidationError, match="duplicate joint name"):
-        model.joint("connection", body0=root, frame0=JointFrame(), body1=child, frame1=JointFrame())
+        model.joint("connection", root.at(JointFrame()), child.at(JointFrame()))
     with pytest.raises(ValidationError, match="unknown"):
-        model.joint("missing", body0=root, frame0=JointFrame(), body1="absent", frame1=JointFrame())
+        model.joint(
+            "missing", root.at(JointFrame()), model.get_rigid_body("absent").at(JointFrame())
+        )
 
 
 def test_old_frame_and_joint_helpers_are_not_public() -> None:

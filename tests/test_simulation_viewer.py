@@ -40,10 +40,8 @@ def _run_dir(tmp_path: Path) -> tuple[Path, Path]:
     )
     model.joint(
         "lid_hinge",
-        body0=base,
-        frame0=JointFrame(),
-        body1=lid,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        lid.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.5)),),
     )
 

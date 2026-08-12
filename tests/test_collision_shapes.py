@@ -115,10 +115,8 @@ def test_exported_stage_passes_openusd_physics_validation(tmp_path: Path) -> Non
     )
     model.joint(
         "pivot",
-        body0=base,
-        frame0=JointFrame(),
-        body1=arm,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        arm.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.5)),),
     )
 

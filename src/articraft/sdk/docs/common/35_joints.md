@@ -5,7 +5,7 @@ tree selected from those joints. Keeping them separate is what lets one physical
 assembly contain closed loops.
 
 ```python
-from articraft.sdk import WORLD, JointAxis, JointDOF, JointFrame
+from articraft.sdk import WORLD, BodyFrame, JointAxis, JointDOF, JointFrame
 ```
 
 ## `JointFrame`
@@ -20,6 +20,12 @@ JointFrame(
 Every joint has one local frame per endpoint. The two frames coincide in the
 authored zero configuration. `xyz` is meters and `rpy` is extrinsic XYZ roll,
 pitch, and yaw in radians.
+
+Normally create a `BodyFrame` with `body.at(...)` or `WORLD.at(...)`. This binds
+the local `JointFrame` to its endpoint before the joint is authored. Points and
+build123d locations, planes, axes, faces, edges, and vertices are accepted. An
+axis direction, face normal, or edge tangent becomes frame-local Z; use
+`ROT_Z` or `TRANS_Z` to move along that selected feature.
 
 Rotating a frame expresses an axis that is not aligned with the body's axes. To
 hinge about a diagonal in the XY plane, yaw the frame and use its local X axis.
@@ -43,17 +49,15 @@ limits for an unbounded axis.
 ```python
 model.joint(
     name: str,
+    endpoint0: BodyFrame,
+    endpoint1: BodyFrame,
     *,
-    body0: RigidBody | str | WORLD,
-    frame0: JointFrame = JointFrame(),
-    body1: RigidBody | str | WORLD,
-    frame1: JointFrame = JointFrame(),
     dofs: Iterable[JointDOF] = (),
 ) -> Joint
 ```
 
-`body0` and `body1` are symmetric; neither means parent. One endpoint may be
-`WORLD`. A joint cannot connect `WORLD` to itself.
+The endpoints are symmetric; neither means parent. One may come from
+`WORLD.at(...)`. A joint cannot connect `WORLD` to itself.
 
 | DOFs | Physical joint |
 | --- | --- |
@@ -65,10 +69,8 @@ model.joint(
 ```python
 lid_hinge = model.joint(
     "lid_hinge",
-    body0=base,
-    frame0=JointFrame(xyz=(0.0, -0.04, 0.02)),
-    body1=lid,
-    frame1=JointFrame(xyz=(0.0, -0.04, 0.0)),
+    base.at((0.0, -0.04, 0.02)),
+    lid.at((0.0, -0.04, 0.0)),
     dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.57)),),
 )
 ```
@@ -107,30 +109,20 @@ swing = (JointDOF(JointAxis.ROT_Y, limits=(-1.5, 1.5)),)
 
 ground_crank = model.joint(
     "ground_crank",
-    body0=ground,
-    body1=crank,
+    ground.at(),
+    crank.at(),
     dofs=swing,
 )
 crank_coupler = model.joint(
     "crank_coupler",
-    body0=crank,
-    frame0=JointFrame(xyz=(CRANK_LENGTH, 0.0, 0.0)),
-    body1=coupler,
+    crank.at((CRANK_LENGTH, 0.0, 0.0)),
+    coupler.at(),
     dofs=swing,
 )
 ground_rocker = model.joint(
     "ground_rocker",
-    body0=ground,
-    frame0=JointFrame(xyz=(GROUND_SPAN, 0.0, 0.0)),
-    body1=rocker,
-    dofs=swing,
-)
-model.joint(
-    "closing_pin",
-    body0=coupler,
-    frame0=JointFrame(xyz=(COUPLER_LENGTH, 0.0, 0.0)),
-    body1=rocker,
-    frame1=JointFrame(xyz=(ROCKER_LENGTH, 0.0, 0.0)),
+    ground.at((GROUND_SPAN, 0.0, 0.0)),
+    rocker.at(),
     dofs=swing,
 )
 
@@ -138,6 +130,14 @@ model.articulation(
     "main",
     root=ground,
     joints=(ground_crank, crank_coupler, ground_rocker),
+)
+
+coupler_tip = coupler.at((COUPLER_LENGTH, 0.0, 0.0))
+model.joint(
+    "closing_pin",
+    coupler_tip,
+    model.frame_in(coupler_tip, rocker),
+    dofs=swing,
 )
 ```
 
@@ -149,6 +149,10 @@ Do not pose the closing joint directly; its value follows from the body poses.
 Supply a tree DOF to `forward_kinematics(...)` or `TestContext.pose(...)` and
 the graph solver determines unspecified coordinates needed to close the ring.
 An unreachable pose raises `LoopClosureError`.
+
+When the intended rocker pin is a build123d edge or axis, also check it with
+`TestContext.expect_coaxial(...)`. This proves that the exact derived closure
+still lands on the authored geometry feature.
 
 ```python
 state = model.resolve().forward_kinematics({"ground_crank.rotY": 0.4})

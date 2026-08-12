@@ -83,8 +83,43 @@ Overlapping shapes within one body are allowed and count as connected. Extend
 a protrusion's own end slightly into the surface it meets instead of adding a
 decorative patch to hide a gap.
 
-Use `body.get_shape(name)` to retrieve an authored shape and
+Use `body.shape(name)` to retrieve an authored shape and
 `model.get_rigid_body(body_or_name)` to retrieve a body.
+
+## Geometry-anchored frames
+
+```python
+body.at(source=None) -> BodyFrame
+```
+
+`body.at(...)` binds a local frame to that body. `source` may be a three-number
+point, `JointFrame`, build123d `Location`, `Plane`, `Axis`, `Face`, `Edge`,
+`Vertex`, or `Shape`, or a `MeshGeometry`. Faces use their center and normal;
+edges use their center and tangent; axes use their position and direction. The
+feature direction becomes frame-local Z. Whole shapes and meshes use their
+bounding-box center. Build123d locations are converted from their exact
+transform, including their degree-based rotation convention.
+
+Use build123d's ordinary topology queries instead of copying coordinates:
+
+```python
+from build123d import Axis
+
+top = housing_shape.faces().sort_by(Axis.Z)[-1]
+top_frame = housing_body.at(top)
+hinge_axis = lid_body.at(lid_shape.edges().filter_by(Axis.X)[0])
+```
+
+`WORLD.at(...)` creates the world endpoint. A raw `JointFrame` is the compact
+USD-local value used when exact numbers are already the clearest input.
+
+```python
+model.frame_in(source: BodyFrame, body: RigidBody | WORLD = WORLD) -> BodyFrame
+```
+
+`frame_in(...)` expresses the same reference-state frame in another body's
+coordinates. It is useful for deriving the second endpoint of a closure or
+fixed mount without repeating transform arithmetic.
 
 ## Resolution
 

@@ -96,14 +96,14 @@ def test_viewer_disables_direct_posing_for_closed_loops(tmp_path) -> None:
     link.add(Box(0.1, 0.02, 0.2), name="body")
     tree = model.joint(
         "tree",
-        body0=base,
-        body1=link,
+        base.at(),
+        link.at(),
         dofs=(JointDOF(JointAxis.ROT_Y),),
     )
     model.joint(
         "closure",
-        body0=base,
-        body1=link,
+        base.at(),
+        link.at(),
         dofs=(JointDOF(JointAxis.ROT_Y),),
     )
     model.articulation("main", root=base, joints=(tree,))
@@ -123,10 +123,8 @@ def test_viewer_orients_symmetric_joint_from_the_articulation_root(tmp_path) -> 
     arm.add(Box(0.1, 0.02, 0.2), name="body")
     hinge = model.joint(
         "hinge",
-        body0=arm,
-        frame0=JointFrame(xyz=(0.2, 0.0, 0.0)),
-        body1=base,
-        frame1=JointFrame(xyz=(0.1, 0.0, 0.0)),
+        arm.at(JointFrame(xyz=(0.2, 0.0, 0.0))),
+        base.at(JointFrame(xyz=(0.1, 0.0, 0.0))),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.75)),),
     )
     model.articulation("main", root=base, joints=(hinge,))
@@ -196,10 +194,8 @@ def _revolute_model() -> RigidBodyAssembly:
     door.add(Box(0.1, 0.02, 0.2), name="panel")
     model.joint(
         "hinge_joint",
-        body0=base,
-        frame0=JointFrame(),
-        body1=door,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        door.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.75)),),
     )
     return model
@@ -214,10 +210,8 @@ def _prismatic_model() -> RigidBodyAssembly:
     # A diagonal travel direction rides in the frame's rotation.
     model.joint(
         "linear_travel",
-        body0=base,
-        frame0=JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0)),
-        body1=carriage,
-        frame1=JointFrame(),
+        base.at(JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0))),
+        carriage.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.1, 0.2)),),
     )
     model.articulation("main", root=base, joints=["linear_travel"])

@@ -22,9 +22,11 @@ Read [assemblies and rigid bodies](30_assembly.md) for structure and
 
 ## Physics graphs
 
-`JointFrame`, `JointDOF`, `JointAxis`, and `Joint` describe physical
-constraints. `Articulation` independently selects a reduced-coordinate tree.
-`PhysicsState` stores authoritative world-space body poses.
+`BodyFrame`, `JointFrame`, `JointDOF`, `JointAxis`, and `Joint` describe physical
+constraints. A `BodyFrame` binds local coordinates to a `RigidBody` or `WORLD`,
+so a joint endpoint cannot accidentally pair one body's frame with another body.
+`Articulation` independently selects a reduced-coordinate tree. `PhysicsState`
+stores authoritative world-space body poses.
 
 Read [joints and articulations](35_joints.md) for frames, D6 axes, loops, and
 kinematics.

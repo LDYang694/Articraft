@@ -14,12 +14,15 @@ the parts still export, and then flap loose the moment anything touches them.
 
 from __future__ import annotations
 
+from build123d import Align, Axis, Box
+from build123d.topology import Shape
+
 from articraft.sdk import (
-    BoxGeometry,
+    BodyFrame,
     JointAxis,
     JointDOF,
-    JointFrame,
     Material,
+    RigidBody,
     RigidBodyAssembly,
     TestContext,
     TestReport,
@@ -30,15 +33,29 @@ RISE = 0.080  # crank length
 BAR = 0.010  # bar thickness
 
 
+def pin(body: RigidBody, direction: Axis, end: int) -> BodyFrame:
+    """Select a bar endpoint from its geometry and give the pin a Y axis."""
+
+    shape = body.shape("arm")
+    if not isinstance(shape, Shape):
+        raise TypeError("this example expects build123d bar geometry")
+    face = shape.faces().sort_by(direction)[end]
+    return body.at(Axis(face.center(), Axis.Y.direction))
+
+
 def build_object_model() -> RigidBodyAssembly:
     model = RigidBodyAssembly("four_bar_linkage")
 
     def bar(name: str, length: float, upright: bool = False):
         body = model.rigid_body(name)
         size = (BAR, BAR, length) if upright else (length, BAR, BAR)
-        offset = (0.0, 0.0, length / 2.0) if upright else (length / 2.0, 0.0, 0.0)
+        align = (
+            (Align.CENTER, Align.CENTER, Align.MIN)
+            if upright
+            else (Align.MIN, Align.CENTER, Align.CENTER)
+        )
         body.add(
-            BoxGeometry(size).translate(*offset),
+            Box(*size, align=align),
             name="arm",
             material=Material.STEEL if name == "ground" else Material.ALUMINUM,
         )
@@ -49,42 +66,27 @@ def build_object_model() -> RigidBodyAssembly:
     coupler = bar("coupler", SPAN)
     right_crank = bar("right_crank", RISE, upright=True)
 
-    swing = (JointDOF(JointAxis.ROT_Y, limits=(-0.6, 0.6)),)
+    # `pin(...)` aligns each selected physical axis with frame-local Z.
+    swing = (JointDOF(JointAxis.ROT_Z, limits=(-0.6, 0.6)),)
 
     # Around the ring. Each pair of frames coincides at rest, so the rectangle
     # closes exactly in the authored pose.
     model.joint(
         "ground_left",
-        body0=ground,
-        frame0=JointFrame(),
-        body1=left_crank,
-        frame1=JointFrame(),
+        pin(ground, Axis.X, 0),
+        pin(left_crank, Axis.Z, 0),
         dofs=swing,
     )
     model.joint(
         "left_coupler",
-        body0=left_crank,
-        frame0=JointFrame(xyz=(0.0, 0.0, RISE)),
-        body1=coupler,
-        frame1=JointFrame(),
+        pin(left_crank, Axis.Z, -1),
+        pin(coupler, Axis.X, 0),
         dofs=swing,
     )
     model.joint(
         "coupler_right",
-        body0=coupler,
-        frame0=JointFrame(xyz=(SPAN, 0.0, 0.0)),
-        body1=right_crank,
-        frame1=JointFrame(xyz=(0.0, 0.0, RISE)),
-        dofs=swing,
-    )
-    # The fourth joint closes the ring. It is real, and it is left out of the
-    # articulation below.
-    model.joint(
-        "ground_right",
-        body0=ground,
-        frame0=JointFrame(xyz=(SPAN, 0.0, 0.0)),
-        body1=right_crank,
-        frame1=JointFrame(),
+        pin(coupler, Axis.X, -1),
+        pin(right_crank, Axis.Z, -1),
         dofs=swing,
     )
 
@@ -92,6 +94,16 @@ def build_object_model() -> RigidBodyAssembly:
         "main",
         root=ground,
         joints=["ground_left", "left_coupler", "coupler_right"],
+    )
+
+    # Derive the second endpoint from the already-authored spanning tree. The
+    # closure is exact even when upstream dimensions or transforms change.
+    ground_right = pin(ground, Axis.X, -1)
+    model.joint(
+        "ground_right",
+        ground_right,
+        model.frame_in(ground_right, right_crank),
+        dofs=swing,
     )
     return model
 
@@ -114,4 +126,17 @@ def run_tests() -> TestReport:
         excluded == ["ground_right"],
         f"expected ground_right to be the loop closer, found {excluded}",
     )
+    ctx.expect_coincident(
+        pin(object_model.get_rigid_body("ground"), Axis.X, -1),
+        pin(object_model.get_rigid_body("right_crank"), Axis.Z, 0),
+        name="right_pin_lands_on_both_bars",
+    )
+    with ctx.pose(ground_left=0.3):
+        ctx.expect_coaxial(
+            pin(object_model.get_rigid_body("ground"), Axis.X, -1),
+            pin(object_model.get_rigid_body("right_crank"), Axis.Z, 0),
+            position_tol=1e-5,
+            angle_tol=1e-5,
+            name="right_pin_stays_coaxial_while_moving",
+        )
     return ctx.report()

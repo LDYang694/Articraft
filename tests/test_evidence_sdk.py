@@ -133,10 +133,8 @@ def _slider_model() -> RigidBodyAssembly:
     model.rigid_body("slider").add(BoxGeometry((0.2, 0.2, 0.2)), name="block")
     model.joint(
         "slide",
-        body0="base",
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1="slider",
-        frame1=JointFrame(),
+        model.get_rigid_body("base").at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        model.get_rigid_body("slider").at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(0.0, 1.0)),),
     )
     return model

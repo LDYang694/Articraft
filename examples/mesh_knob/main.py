@@ -50,6 +50,6 @@ object_model = build_object_model()
 
 def run_tests() -> TestReport:
     ctx = TestContext(object_model)
-    body = object_model.get_rigid_body("knob").get_shape("body")
+    body = object_model.get_rigid_body("knob").shape("body")
     ctx.check("body_is_watertight", body.is_watertight, "the union must stay watertight")
     return ctx.report()

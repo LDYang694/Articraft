@@ -65,7 +65,7 @@ the tree of joints the simulator solves.
 ```python
 from build123d import Box
 
-from articraft.sdk import JointAxis, JointDOF, JointFrame
+from articraft.sdk import JointAxis, JointDOF
 
 
 lid = model.rigid_body("lid")
@@ -73,17 +73,16 @@ lid.add(Box(0.1, 0.1, 0.01), name="panel")
 
 model.joint(
     "body_to_lid",
-    body0="body",
-    frame0=JointFrame(xyz=(0.0, 0.05, 0.05)),
-    body1="lid",
-    frame1=JointFrame(),
+    model.get_rigid_body("body").at((0.0, 0.05, 0.05)),
+    lid.at(),
     dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.8)),),
 )
 model.articulation("main", root="body", joints=["body_to_lid"])
 ```
 
-Place each joint endpoint with a `JointFrame` in that body's local coordinates.
-The two frames coincide at zero. `body0` and `body1` are symmetric; the
+`body.at(...)` binds a point or a build123d `Location`, `Plane`, `Axis`, face,
+edge, or vertex to the body whose coordinates it uses. The two endpoint frames
+coincide at zero. The endpoints are symmetric; the
 articulation independently selects the solver's rooted spanning tree. Closed
 loops author every physical joint and omit the closing constraint from that tree.
 

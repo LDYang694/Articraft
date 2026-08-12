@@ -325,7 +325,7 @@ class MeshCollisionKernel:
             raise ValidationError(f"unknown part: {part.name!r}")
         if shape_name is not None:
             shape_name = str(shape_name).strip()
-            geometry = part.get_shape(shape_name)
+            geometry = part.shape(shape_name)
             return [self._entry(part.name, shape_name, geometry, transform)]
         return [
             self._entry(part.name, shape.name, shape.geometry, transform)

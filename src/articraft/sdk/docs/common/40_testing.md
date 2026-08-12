@@ -56,6 +56,28 @@ coordinates needed by closed loops. `ctx.state(physics_state)` instead uses a
 complete authoritative `PhysicsState`; use it for maximal-coordinate states,
 multiple articulation trees, or poses recorded by a physics backend.
 
+## Frame intent checks
+
+Frame checks consume the same `BodyFrame` values as `model.joint(...)` and use
+the current pose.
+
+```python
+ctx.expect_coincident(base.at(base_pin), arm.at(arm_pin))
+ctx.expect_coaxial(base.at(base_axis), arm.at(arm_axis), axis="z")
+```
+
+`expect_coincident(first, second, *, position_tol=1e-6, angle_tol=1e-6,
+name=None)` checks both origins and full orientations. `expect_coaxial(first,
+second, *, axis="z", position_tol=1e-6, angle_tol=1e-6, name=None)` checks that
+the selected local X, Y, or Z axes lie on the same infinite line; opposite
+directions count as aligned. Linear tolerances use meters and angular tolerances
+use radians.
+
+Use these for pins, bearings, hinge edges, and derived loop closures. Use
+`expect_contact(...)` for actual surface touching and `expect_within(...)` or
+`expect_gap(...)` for seating and support relationships; those are mesh checks,
+not frame checks.
+
 ## Reports
 
 ### `TestFailure`

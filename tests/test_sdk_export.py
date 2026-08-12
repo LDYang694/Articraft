@@ -129,36 +129,28 @@ def test_export_supports_every_articulation_type_and_matching_joint_frames(tmp_p
     slider.add(Box(0.1, 0.1, 0.1), name="body")
     model.joint(
         "fixed_mount",
-        body0=root,
-        frame0=JointFrame(),
-        body1=fixed_part,
-        frame1=JointFrame(),
+        root.at(JointFrame()),
+        fixed_part.at(JointFrame()),
         dofs=(),
     )
     model.joint(
         "hinge_joint",
-        body0=fixed_part,
-        frame0=JointFrame(),
-        body1=hinge,
-        frame1=JointFrame(),
+        fixed_part.at(JointFrame()),
+        hinge.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Z, limits=(-0.5, 0.75)),),
     )
     model.joint(
         "rotor_joint",
-        body0=hinge,
-        frame0=JointFrame(),
-        body1=rotor,
-        frame1=JointFrame(),
+        hinge.at(JointFrame()),
+        rotor.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Y),),
     )
     # A diagonal travel direction is carried by the frame's rotation: yaw 45
     # degrees so the joint's own X points along the old (1, 1, 0).
     model.joint(
         "slider_joint",
-        body0=rotor,
-        frame0=JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0)),
-        body1=slider,
-        frame1=JointFrame(),
+        rotor.at(JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0))),
+        slider.at(JointFrame()),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.1, 0.2)),),
     )
 
@@ -200,10 +192,8 @@ def test_reserved_and_shared_names_do_not_corrupt_the_stage(tmp_path) -> None:
     child.add(Box(0.1, 0.1, 0.1), name="body", material=slick)
     model.joint(
         "shapes",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.2)),
-        body1=child,
-        frame1=JointFrame(),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.2))),
+        child.at(),
         dofs=(JointDOF(JointAxis.ROT_Z),),
     )
     model.articulation("main", root=base, joints=["shapes"])
@@ -238,10 +228,8 @@ def _hinge() -> RigidBodyAssembly:
     # hinge turns about the frame's own Y.
     model.joint(
         "base_to_door",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.2), rpy=(math.pi / 4.0, 0.2, 0.3)),
-        body1=door,
-        frame1=JointFrame(),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.2), rpy=(math.pi / 4.0, 0.2, 0.3))),
+        door.at(JointFrame()),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(0.0, 1.57)),),
     )
     model.articulation("main", root=base, joints=["base_to_door"])
