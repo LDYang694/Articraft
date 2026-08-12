@@ -437,7 +437,7 @@ def test_compile_blocks_unhealthy_mesh_and_honors_exact_issue_allowance(tmp_path
     TestReport,
 )
 
-object_model = RigidBodyAssembly("unhealthy-mesh")
+object_model = RigidBodyAssembly("unhealthy_mesh")
 base = object_model.rigid_body("base")
 box = BoxGeometry((1, 1, 1))
 base.add(MeshGeometry(box.vertices, box.faces[:-1]), name="open-sheet")

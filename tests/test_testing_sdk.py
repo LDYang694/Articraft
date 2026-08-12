@@ -70,7 +70,7 @@ def test_report_records_warnings_and_shape_scoped_allowances() -> None:
 
 
 def test_mesh_health_allowance_is_exact_and_requires_a_reason() -> None:
-    model = RigidBodyAssembly("mesh-health")
+    model = RigidBodyAssembly("mesh_health")
     base = model.rigid_body("base")
     box = BoxGeometry((1.0, 1.0, 1.0))
     open_box = MeshGeometry(box.vertices, box.faces[:-1])
@@ -145,7 +145,7 @@ def test_complete_physics_state_is_authoritative_for_geometry_queries() -> None:
 
 
 def test_world_bounds_transform_large_mesh_without_runtime_warnings() -> None:
-    model = RigidBodyAssembly("large-mesh-transform")
+    model = RigidBodyAssembly("large_mesh_transform")
     root = model.rigid_body("root")
     sphere = SphereGeometry(1.0, width_segments=32, height_segments=16)
     assert len(sphere.vertices) >= 512
@@ -319,8 +319,8 @@ def test_scoped_allowance_does_not_hide_another_shape_pair() -> None:
 
 
 def test_adjacent_contact_and_tiny_penetration_pass_physical_thresholds() -> None:
-    for offset in (1.0, 0.996):
-        model = RigidBodyAssembly(f"contact_{offset}")
+    for index, offset in enumerate((1.0, 0.996)):
+        model = RigidBodyAssembly(f"contact_{index}")
         parent = model.rigid_body("parent")
         add_box(parent, "body")
         child = model.rigid_body("child")

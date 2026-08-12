@@ -7,7 +7,7 @@ from typing import TypeAlias
 from build123d.topology import Shape
 
 from articraft.sdk._mesh.core import MeshGeometry
-from articraft.sdk._values import _as_name
+from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.errors import ValidationError
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Color, Material, _as_color, _as_material
@@ -55,7 +55,7 @@ class RigidBody:
     body_state: BodyState = field(default=BodyState(), kw_only=True)
 
     def __post_init__(self) -> None:
-        self.name = _as_name(self.name, field_name="rigid body name")
+        self.name = _as_identifier(self.name, field_name="rigid body name")
         self._validate_physics()
 
     def _validate_physics(self) -> None:
@@ -124,7 +124,7 @@ class RigidBody:
         return iter(self._shapes.values())
 
     def validate(self) -> None:
-        self.name = _as_name(self.name, field_name="rigid body name")
+        self.name = _as_identifier(self.name, field_name="rigid body name")
         self._validate_physics()
         if not self._shapes:
             raise ValidationError(f"rigid body {self.name!r} must contain at least one shape")

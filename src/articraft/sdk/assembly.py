@@ -10,7 +10,7 @@ from typing import TypeAlias, cast
 import numpy as np
 import trimesh
 
-from articraft.sdk._values import _as_name
+from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
 from articraft.sdk.errors import LoopClosureError, ValidationError
 from articraft.sdk.mass import MassProperties
@@ -109,7 +109,7 @@ class Joint:
     dofs: tuple[JointDOF, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _as_name(self.name, field_name="joint name"))
+        object.__setattr__(self, "name", _as_identifier(self.name, field_name="joint name"))
         if not isinstance(self.frame0, JointFrame) or not isinstance(self.frame1, JointFrame):
             raise ValidationError(f"joint {self.name!r} frames must be JointFrame values")
         try:
@@ -161,7 +161,7 @@ class Articulation:
     joints: tuple[Joint, ...] | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _as_name(self.name, field_name="articulation name"))
+        object.__setattr__(self, "name", _as_identifier(self.name, field_name="articulation name"))
         if self.joints is not None:
             try:
                 joints = tuple(self.joints)
@@ -412,7 +412,7 @@ class RigidBodyAssembly:
     articulations: list[Articulation] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        self.name = _as_name(self.name, field_name="assembly name")
+        self.name = _as_identifier(self.name, field_name="assembly name")
         if not isinstance(self.scene, PhysicsScene):
             raise ValidationError(f"assembly {self.name!r} scene must be a PhysicsScene")
 
@@ -504,7 +504,7 @@ class RigidBodyAssembly:
         self.resolve()
 
     def resolve(self) -> ResolvedRigidBodyAssembly:
-        self.name = _as_name(self.name, field_name="assembly name")
+        self.name = _as_identifier(self.name, field_name="assembly name")
         _validate_members(self)
         resolved_articulations, selected_by_joint, articulated_bodies = _resolve_articulations(self)
         resolved_joints = tuple(

@@ -38,6 +38,25 @@ def _as_name(value: object, *, field_name: str) -> str:
     return name
 
 
+def _as_identifier(value: object, *, field_name: str) -> str:
+    """A name that survives every namespace it flows into, verbatim.
+
+    Assembly, rigid body, joint, and articulation names become USD prim
+    names, manifest keys, MJCF names, and viewer keys, and joint names gain
+    a ``.axis`` suffix to form DOF ids. Allowing anything looser means the
+    exported prim silently diverges from the authored name, or a dot makes
+    one joint's name collide with another's DOF id.
+    """
+
+    name = _as_name(value, field_name=field_name)
+    if not name.isidentifier() or not name.isascii():
+        raise ValidationError(
+            f"{field_name} must be an identifier: letters, digits, and underscores, "
+            f"not starting with a digit; got {name!r}"
+        )
+    return name
+
+
 def _optional_finite(value: object | None, *, field_name: str) -> float | None:
     if value is None:
         return None

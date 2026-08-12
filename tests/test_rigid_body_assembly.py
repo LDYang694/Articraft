@@ -324,3 +324,26 @@ def test_gimbal_lock_does_not_charge_a_locked_axis() -> None:
     state = resolved.forward_kinematics({"socket.rotY": math.pi / 2.0, "socket.rotZ": 0.4})
 
     resolved.world_transforms(state)
+
+
+def test_structural_names_must_be_identifiers() -> None:
+    """Assembly, body, joint, and articulation names flow verbatim into USD
+    prim paths, DOF ids, MJCF names, and viewer keys; anything looser than an
+    identifier silently diverges somewhere downstream."""
+
+    with pytest.raises(ValidationError, match="identifier"):
+        RigidBodyAssembly("my assembly")
+
+    model = RigidBodyAssembly("named")
+    with pytest.raises(ValidationError, match="identifier"):
+        model.rigid_body("my part")
+    body = add_body(model, "part")
+    other = add_body(model, "other")
+    with pytest.raises(ValidationError, match="identifier"):
+        model.joint("hinge.rotZ", body0=body, body1=other)
+    hinge = model.joint("hinge", body0=body, body1=other)
+    with pytest.raises(ValidationError, match="identifier"):
+        model.articulation("main tree", root=body, joints=[hinge])
+
+    # Shape names stay display-only and permissive.
+    body.add(Box(0.05, 0.05, 0.05), name="display-shape")
