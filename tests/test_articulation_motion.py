@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from articraft.sdk import (
-    ArticulatedObject,
-    ArticulationType,
     BoxGeometry,
     FailureKind,
-    MotionLimits,
-    Origin,
+    JointAxis,
+    JointDOF,
+    JointFrame,
+    RigidBodyAssembly,
     TestContext,
 )
 
 
-def _hinged_lid(pivot: tuple[float, float, float]) -> ArticulatedObject:
+def _hinged_lid(pivot: tuple[float, float, float]) -> RigidBodyAssembly:
     """A base slab with a lid resting on it, hinged about X at `pivot`.
 
     The lid geometry lives in the joint frame, so it is authored relative to
@@ -19,21 +19,18 @@ def _hinged_lid(pivot: tuple[float, float, float]) -> ArticulatedObject:
     where the pivot is. A pivot on the contact plane keeps the lid seated as it
     swings; a pivot above the contact plane lifts the lid clear as it rotates.
     """
-    model = ArticulatedObject("hinge_test")
-    base = model.part("base")
+    model = RigidBodyAssembly("hinge_test")
+    base = model.rigid_body("base")
     base.add(BoxGeometry((0.10, 0.10, 0.02)), name="base_slab")  # top at z=0.01
     world_center = (0.0, 0.0, 0.02)
     offset = tuple(world_center[i] - pivot[i] for i in range(3))
-    lid = model.part("lid")
+    lid = model.rigid_body("lid")
     lid.add(BoxGeometry((0.10, 0.10, 0.02)).translate(*offset), name="lid_slab")
-    model.articulation(
+    model.joint(
         "lid_hinge",
-        ArticulationType.REVOLUTE,
-        base,
-        lid,
-        origin=Origin(xyz=pivot),
-        axis=(1.0, 0.0, 0.0),
-        motion_limits=MotionLimits(lower=0.0, upper=1.2),
+        base.at(JointFrame(xyz=pivot)),
+        lid.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.2)),),
     )
     return model
 
@@ -59,20 +56,55 @@ def test_separation_check_fails_a_lid_that_lifts_off() -> None:
 
 def test_separation_check_ignores_prismatic_liftoff() -> None:
     # A prismatic lift-off is meant to separate; it must not be flagged.
-    model = ArticulatedObject("liftoff")
-    base = model.part("base")
+    model = RigidBodyAssembly("liftoff")
+    base = model.rigid_body("base")
     base.add(BoxGeometry((0.10, 0.10, 0.02)), name="base_slab")
-    body = model.part("body")
+    body = model.rigid_body("body")
     body.add(BoxGeometry((0.08, 0.08, 0.10)).translate(0.0, 0.0, 0.06), name="body_box")
-    model.articulation(
+    model.joint(
         "lift",
-        ArticulationType.PRISMATIC,
-        base,
-        body,
-        origin=Origin(xyz=(0.0, 0.0, 0.0)),
-        axis=(0.0, 0.0, 1.0),
-        motion_limits=MotionLimits(lower=0.0, upper=0.10),
+        base.at(JointFrame()),
+        body.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.TRANS_Z, limits=(0.0, 0.10)),),
     )
     ctx = TestContext(model)
     ctx.fail_if_articulation_separates_child()
     assert ctx.report().passed
+
+
+def test_a_loop_closing_joint_is_left_out_of_the_separation_sweep() -> None:
+    """The ring's own joint never places its child, so sweeping it proves nothing.
+
+    #116 made this skip driven joints for the same reason. Drives are gone, but a
+    loop closer has the identical problem: its value is decided by the rest of
+    the mechanism, and the check would read a legitimate linkage motion as the
+    child coming loose.
+    """
+
+    model = RigidBodyAssembly("bail")
+    body = model.rigid_body("body")
+    body.add(BoxGeometry((0.10, 0.10, 0.10)), name="shell")
+    handle = model.rigid_body("handle")
+    handle.add(BoxGeometry((0.12, 0.01, 0.01)).translate(0.0, 0.0, 0.05), name="bail")
+    swing = (JointDOF(JointAxis.ROT_X, limits=(-1.0, 1.0)),)
+    model.joint(
+        "left_pivot",
+        body.at(JointFrame(xyz=(-0.05, 0.0, 0.05))),
+        handle.at(JointFrame(xyz=(-0.05, 0.0, 0.05))),
+        dofs=swing,
+    )
+    model.joint(
+        "right_pivot",
+        body.at(JointFrame(xyz=(0.05, 0.0, 0.05))),
+        handle.at(JointFrame(xyz=(0.05, 0.0, 0.05))),
+        dofs=swing,
+    )
+    model.articulation("main", root=body, joints=["left_pivot"])
+
+    ctx = TestContext(model)
+    ctx.fail_if_articulation_separates_child()
+    report = ctx.report()
+
+    assert report.passed
+    # Only the tree pivot was swept; the closer was skipped rather than failed.
+    assert report.checks_run == 1

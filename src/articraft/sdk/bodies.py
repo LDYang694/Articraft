@@ -7,8 +7,9 @@ from typing import TypeAlias
 from build123d.topology import Shape
 
 from articraft.sdk._mesh.core import MeshGeometry
+from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.errors import ValidationError
-from articraft.sdk.joints import _as_name
+from articraft.sdk.frames import BodyFrame, FrameSource, _as_joint_frame
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Color, Material, _as_color, _as_material
 from articraft.sdk.physics import BodyState
@@ -55,7 +56,7 @@ class RigidBody:
     body_state: BodyState = field(default=BodyState(), kw_only=True)
 
     def __post_init__(self) -> None:
-        self.name = _as_name(self.name, field_name="rigid body name")
+        self.name = _as_identifier(self.name, field_name="rigid body name")
         self._validate_physics()
 
     def _validate_physics(self) -> None:
@@ -113,18 +114,23 @@ class RigidBody:
         )
         return shape
 
-    def get_shape(self, name: str) -> Geometry:
+    def shape(self, name: str) -> Geometry:
         shape_name = _as_name(name, field_name="shape name")
         entry = self._shapes.get(shape_name)
         if entry is None:
             raise ValidationError(f"unknown shape {shape_name!r} on rigid body {self.name!r}")
         return entry.geometry
 
+    def at(self, source: FrameSource = None) -> BodyFrame:
+        """Bind a local point or build123d geometric feature to this body."""
+
+        return BodyFrame(self, _as_joint_frame(source))
+
     def _iter_shapes(self) -> Iterator[_ShapeData]:
         return iter(self._shapes.values())
 
     def validate(self) -> None:
-        self.name = _as_name(self.name, field_name="rigid body name")
+        self.name = _as_identifier(self.name, field_name="rigid body name")
         self._validate_physics()
         if not self._shapes:
             raise ValidationError(f"rigid body {self.name!r} must contain at least one shape")

@@ -18,7 +18,7 @@ from articraft.sdk.assembly import (
     RigidBodyAssembly,
 )
 from articraft.sdk.bodies import RigidBody
-from articraft.sdk.errors import ValidationError
+from articraft.sdk.errors import LoopClosureError, ValidationError
 
 
 def add_body(assembly: RigidBodyAssembly, name: str) -> RigidBody:
@@ -34,34 +34,30 @@ def four_bar(*, second_closure: bool = False) -> RigidBodyAssembly:
     coupler = add_body(assembly, "coupler")
     rocker = add_body(assembly, "rocker")
     revolute = (JointDOF(JointAxis.ROT_Z),)
-    ground_crank = assembly.joint("ground_crank", body0=ground, body1=crank, dofs=revolute)
+    ground_crank = assembly.joint("ground_crank", ground.at(), crank.at(), dofs=revolute)
     crank_coupler = assembly.joint(
         "crank_coupler",
-        body0=crank,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=coupler,
+        crank.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        coupler.at(),
         dofs=revolute,
     )
     coupler_rocker = assembly.joint(
         "coupler_rocker",
-        body0=coupler,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=rocker,
+        coupler.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        rocker.at(),
         dofs=revolute,
     )
     assembly.joint(
         "rocker_ground",
-        body0=rocker,
-        body1=ground,
-        frame1=JointFrame(xyz=(2.0, 0.0, 0.0)),
+        rocker.at(),
+        ground.at(JointFrame(xyz=(2.0, 0.0, 0.0))),
         dofs=revolute,
     )
     if second_closure:
         assembly.joint(
             "crank_rocker",
-            body0=crank,
-            frame0=JointFrame(xyz=(2.0, 0.0, 0.0)),
-            body1=rocker,
+            crank.at(JointFrame(xyz=(2.0, 0.0, 0.0))),
+            rocker.at(),
             dofs=revolute,
         )
     assembly.articulation(
@@ -78,8 +74,8 @@ def test_joint_dofs_are_usd_d6_axes_and_unlisted_axes_are_locked() -> None:
     moving = add_body(assembly, "moving")
     joint = assembly.joint(
         "motion",
-        body0=base,
-        body1=moving,
+        base.at(),
+        moving.at(),
         dofs=(
             JointDOF("rotZ", limits=(-1.0, 1.0)),
             JointDOF(JointAxis.TRANS_X, limits=(-0.2, 0.3)),
@@ -105,8 +101,8 @@ def test_joint_limits_must_include_the_frame_defined_zero_configuration() -> Non
         b = add_body(assembly, "b")
         assembly.joint(
             "joint",
-            body0=a,
-            body1=b,
+            a.at(),
+            b.at(),
             dofs=(JointDOF("rotX"), JointDOF("rotX")),
         )
 
@@ -118,17 +114,11 @@ def test_ordinary_tree_articulation_is_inferred_and_supports_forward_kinematics(
     tip = add_body(assembly, "tip")
     hinge = assembly.joint(
         "hinge",
-        body0=base,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=link,
+        base.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        link.at(),
         dofs=(JointDOF(JointAxis.ROT_Z, limits=(-math.pi, math.pi)),),
     )
-    assembly.joint(
-        "tip_mount",
-        body0=link,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=tip,
-    )
+    assembly.joint("tip_mount", link.at(JointFrame(xyz=(1.0, 0.0, 0.0))), tip.at())
     assembly.articulation("arm", root=base)
 
     resolved = assembly.resolve()
@@ -153,8 +143,10 @@ def test_closed_loop_joints_are_derived_as_regular_excluded_constraints(
     assert resolved.has_closed_loops
     assert np.allclose(resolved.reference_state.matrix("rocker")[:3, 3], (2.0, 0.0, 0.0))
 
-    with pytest.raises(ValidationError, match="closed-loop assemblies"):
+    with pytest.raises(LoopClosureError, match="cannot reach this pose"):
         resolved.forward_kinematics({"ground_crank.rotZ": 0.2})
+    with pytest.raises(ValidationError, match="closure joint positions"):
+        resolved.forward_kinematics({"rocker_ground.rotZ": 0.2})
 
 
 def test_closed_loop_requires_an_explicit_articulation_tree() -> None:
@@ -201,13 +193,8 @@ def test_world_joint_is_the_fixed_articulation_root() -> None:
     assembly = RigidBodyAssembly("mounted")
     base = add_body(assembly, "base")
     link = add_body(assembly, "link")
-    mount = assembly.joint(
-        "mount",
-        body0=WORLD,
-        frame0=JointFrame(xyz=(1.0, 2.0, 3.0)),
-        body1=base,
-    )
-    hinge = assembly.joint("hinge", body0=base, body1=link, dofs=(JointDOF(JointAxis.ROT_Y),))
+    mount = assembly.joint("mount", WORLD.at(JointFrame(xyz=(1.0, 2.0, 3.0))), base.at())
+    hinge = assembly.joint("hinge", base.at(), link.at(), dofs=(JointDOF(JointAxis.ROT_Y),))
     assembly.articulation("fixed", root=mount, joints=(mount, hinge))
 
     resolved = assembly.resolve()
@@ -222,9 +209,9 @@ def test_multiple_articulations_do_not_share_bodies_and_cross_joints_are_exclude
     b = add_body(assembly, "b")
     c = add_body(assembly, "c")
     d = add_body(assembly, "d")
-    ab = assembly.joint("ab", body0=a, body1=b)
-    cd = assembly.joint("cd", body0=c, body1=d)
-    assembly.joint("bridge", body0=b, body1=c)
+    ab = assembly.joint("ab", a.at(), b.at())
+    cd = assembly.joint("cd", c.at(), d.at())
+    assembly.joint("bridge", b.at(), c.at())
     assembly.articulation("left", root=a, joints=(ab,))
     assembly.articulation("right", root=c, joints=(cd,))
 
@@ -240,7 +227,7 @@ def test_maximal_coordinate_assembly_needs_no_articulation() -> None:
     assembly = RigidBodyAssembly("maximal")
     a = add_body(assembly, "a")
     b = add_body(assembly, "b")
-    assembly.joint("constraint", body0=a, body1=b, dofs=(JointDOF(JointAxis.ROT_X),))
+    assembly.joint("constraint", a.at(), b.at(), dofs=(JointDOF(JointAxis.ROT_X),))
 
     resolved = assembly.resolve()
 
@@ -259,8 +246,8 @@ def test_invalid_graph_references_and_disconnected_bodies_fail() -> None:
     local = add_body(assembly, "local")
     foreign = RigidBody("foreign")
     foreign.add(Box(0.1, 0.1, 0.1), name="shape")
-    with pytest.raises(ValidationError, match="unknown body1"):
-        assembly.joint("bad", body0=local, body1=foreign)
+    with pytest.raises(ValidationError, match="unknown endpoint1"):
+        assembly.joint("bad", local.at(), foreign.at())
 
 
 def test_articulation_selection_must_be_a_rooted_tree() -> None:
@@ -273,7 +260,7 @@ def test_articulation_selection_must_be_a_rooted_tree() -> None:
 
     world_assembly = RigidBodyAssembly("wrong_root")
     body = add_body(world_assembly, "body")
-    mount = world_assembly.joint("mount", body0=WORLD, body1=body)
+    mount = world_assembly.joint("mount", WORLD.at(), body.at())
     world_assembly.articulation("bad", root=body, joints=(mount,))
     with pytest.raises(ValidationError, match="use that joint as the articulation root"):
         world_assembly.resolve()
@@ -296,10 +283,8 @@ def _ball(*axes: JointAxis) -> ResolvedRigidBodyAssembly:
     head = add_body(assembly, "head")
     assembly.joint(
         "socket",
-        body0=base,
-        frame0=JointFrame(),
-        body1=head,
-        frame1=JointFrame(),
+        base.at(JointFrame()),
+        head.at(JointFrame()),
         dofs=tuple(JointDOF(axis, limits=(-math.pi, math.pi)) for axis in axes),
     )
     assembly.articulation("main", root=base, joints=["socket"])
@@ -322,3 +307,26 @@ def test_gimbal_lock_does_not_charge_a_locked_axis() -> None:
     state = resolved.forward_kinematics({"socket.rotY": math.pi / 2.0, "socket.rotZ": 0.4})
 
     resolved.world_transforms(state)
+
+
+def test_structural_names_must_be_identifiers() -> None:
+    """Assembly, body, joint, and articulation names flow verbatim into USD
+    prim paths, DOF ids, MJCF names, and viewer keys; anything looser than an
+    identifier silently diverges somewhere downstream."""
+
+    with pytest.raises(ValidationError, match="identifier"):
+        RigidBodyAssembly("my assembly")
+
+    model = RigidBodyAssembly("named")
+    with pytest.raises(ValidationError, match="identifier"):
+        model.rigid_body("my part")
+    body = add_body(model, "part")
+    other = add_body(model, "other")
+    with pytest.raises(ValidationError, match="identifier"):
+        model.joint("hinge.rotZ", body.at(), other.at())
+    hinge = model.joint("hinge", body.at(), other.at())
+    with pytest.raises(ValidationError, match="identifier"):
+        model.articulation("main tree", root=body, joints=[hinge])
+
+    # Shape names stay display-only and permissive.
+    body.add(Box(0.05, 0.05, 0.05), name="display-shape")

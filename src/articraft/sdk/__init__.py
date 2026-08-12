@@ -6,9 +6,9 @@ not extra import paths.
 
 Six threads run through this package:
 
-- **structure** -- what the object is and how it moves. ``object`` holds
-  ``Part`` and ``ArticulatedObject``; ``joints`` holds ``Articulation`` and
-  its motion limits.
+- **structure** -- what the object is and how it moves. ``bodies`` holds
+  ``RigidBody``; ``assembly`` holds ``RigidBodyAssembly``, its ``Joint``s and
+  the ``Articulation``s that name the trees a simulator solves.
 - **geometry** -- how shapes are made. ``mesh`` is the public face; ``_mesh``
   is the engine behind it. Geometry is undifferentiated: a boolean or a weld
   does not know whether the result is heavy or shiny.
@@ -57,19 +57,19 @@ from articraft.sdk._mesh.sweeps import (
     SweepGeometry,
     WirePolylineGeometry,
 )
-from articraft.sdk.errors import SDKError, ValidationError
-from articraft.sdk.joints import (
-    AimAt,
+from articraft.sdk.assembly import (
     Articulation,
-    ArticulationType,
-    Drive,
-    MotionLimits,
-    Origin,
-    SpanTo,
+    Joint,
+    JointAxis,
+    JointDOF,
+    PhysicsState,
+    RigidBodyAssembly,
 )
+from articraft.sdk.bodies import RigidBody
+from articraft.sdk.errors import LoopClosureError, SDKError, ValidationError
+from articraft.sdk.frames import WORLD, BodyFrame, JointFrame
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Material
-from articraft.sdk.object import ArticulatedObject, Part
 from articraft.sdk.physics import EARTH_GRAVITY, BodyState, PhysicsScene
 from articraft.sdk.testing import (
     AllowedMeshIssues,
@@ -99,13 +99,12 @@ from articraft.sdk.visual import (
 
 __all__ = [
     "EARTH_GRAVITY",
-    "AimAt",
+    "WORLD",
     "AllowedMeshIssues",
     "AllowedOverlap",
     "ArcPipeGeometry",
-    "ArticulatedObject",
     "Articulation",
-    "ArticulationType",
+    "BodyFrame",
     "BodyState",
     "BoxGeometry",
     "CapsuleGeometry",
@@ -113,15 +112,19 @@ __all__ = [
     "CylinderGeometry",
     "DistanceFinding",
     "DomeGeometry",
-    "Drive",
     "ExtrudeGeometry",
     "ExtrudeWithHolesGeometry",
     "FailureKind",
     "GeometryMetrics",
     "ImagePoint",
+    "Joint",
+    "JointAxis",
+    "JointDOF",
+    "JointFrame",
     "LatheGeometry",
     "LineOverlay",
     "LoftGeometry",
+    "LoopClosureError",
     "MassProperties",
     "Material",
     "MeridionalSectionView",
@@ -130,19 +133,18 @@ __all__ = [
     "MeshHealthIssue",
     "MeshHealthReport",
     "ModelView",
-    "MotionLimits",
     "MotionStripView",
-    "Origin",
-    "Part",
     "PhysicsScene",
+    "PhysicsState",
     "PipeGeometry",
     "PointOverlay",
     "PoseSample",
     "Reticle",
+    "RigidBody",
+    "RigidBodyAssembly",
     "RoundedBoxGeometry",
     "SDKError",
     "SectionView",
-    "SpanTo",
     "SphereGeometry",
     "SuperellipsoidGeometry",
     "SweepGeometry",

@@ -10,35 +10,38 @@ Compile it:  python -m articraft.compiler.worker <run_dir>
 
 from __future__ import annotations
 
-from build123d import Box
+from build123d import Align, Axis, Box
 
 from articraft.sdk import (
-    ArticulatedObject,
-    ArticulationType,
+    JointAxis,
+    JointDOF,
     Material,
-    MotionLimits,
-    Origin,
+    RigidBodyAssembly,
     TestContext,
     TestReport,
 )
 
 
-def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject("hinged_box")
+def build_object_model() -> RigidBodyAssembly:
+    model = RigidBodyAssembly("hinged_box")
 
-    base = model.part("base")
+    base = model.rigid_body("base")
     # Saying what a shape is made of settles its mass, how it behaves on contact,
     # and how it looks. Aluminum comes out light and metallic without asking.
-    base.add(Box(0.10, 0.08, 0.04), name="body", material=Material.ALUMINUM)
+    base_shape = Box(0.10, 0.08, 0.04)
+    base.add(base_shape, name="body", material=Material.ALUMINUM)
 
-    lid = model.part("lid")
+    lid = model.rigid_body("lid")
+    lid_shape = Box(
+        0.10,
+        0.08,
+        0.015,
+        align=(Align.CENTER, Align.MIN, Align.MIN),
+    )
     lid.add(
-        # Part geometry is authored in the part's LOCAL frame; the hinge
-        # origin (0, -0.04, 0.02) maps it into the parent. Local (0, 0.04,
-        # 0.007) therefore lands the lid at world (0, 0, 0.027): its knuckle
-        # edge sits 0.5 mm into the base, a small designed embed that keeps
-        # the parts physically connected (declared below with allow_overlap).
-        Box(0.10, 0.08, 0.015).translate((0.0, 0.04, 0.007)),
+        # The rear-bottom edge is the body's local origin, so it can be selected
+        # directly as the matching hinge feature below.
+        lid_shape,
         name="body",
         # A recolor keeps the material -- still plastic, still 1050 kg/m^3 --
         # and only changes what it looks like: an amber lid on a metal base.
@@ -46,17 +49,20 @@ def build_object_model() -> ArticulatedObject:
         color=(0.62, 0.45, 0.16),
     )
 
-    model.articulation(
+    base_edge = base_shape.edges().filter_by(Axis.X).group_by(Axis.Y)[0].sort_by(Axis.Z)[-1]
+    lid_edge = lid_shape.edges().filter_by(Axis.X).group_by(Axis.Y)[0].sort_by(Axis.Z)[0]
+    base_hinge = base.at(Axis(base_edge.center(), Axis.X.direction))
+    lid_hinge = lid.at(Axis(lid_edge.center(), Axis.X.direction))
+
+    # The hinge frames are anchored to the actual contact edges. Axis directions
+    # become local Z, so ROT_Z opens the lid around the selected edge.
+    model.joint(
         "lid_hinge",
-        ArticulationType.REVOLUTE,
-        base,
-        lid,
-        # The hinge line is the lid/base contact edge: rotating around it
-        # keeps the parts touching instead of pulling the lid off the box.
-        origin=Origin(xyz=(0.0, -0.04, 0.02)),
-        axis=(1.0, 0.0, 0.0),
-        motion_limits=MotionLimits(lower=0.0, upper=1.5708),
+        base_hinge,
+        lid_hinge,
+        dofs=(JointDOF(JointAxis.ROT_Z, limits=(0.0, 1.5708)),),
     )
+    model.articulation("main", root=base, joints=["lid_hinge"])
     return model
 
 
@@ -65,12 +71,23 @@ object_model = build_object_model()
 
 def run_tests() -> TestReport:
     ctx = TestContext(object_model)
-    ctx.allow_overlap(
-        "base",
-        "lid",
-        reason="hinge knuckle embedded in the base",
-        shape_a="body",
-        shape_b="body",
-    )
     ctx.expect_contact("base", "lid")
+    base = object_model.get_rigid_body("base")
+    lid = object_model.get_rigid_body("lid")
+    base_shape = base.shape("body")
+    lid_shape = lid.shape("body")
+    assert isinstance(base_shape, Box)
+    assert isinstance(lid_shape, Box)
+    base_edge = base_shape.edges().filter_by(Axis.X).group_by(Axis.Y)[0].sort_by(Axis.Z)[-1]
+    lid_edge = lid_shape.edges().filter_by(Axis.X).group_by(Axis.Y)[0].sort_by(Axis.Z)[0]
+    ctx.expect_coaxial(
+        base.at(Axis(base_edge.center(), Axis.X.direction)),
+        lid.at(Axis(lid_edge.center(), Axis.X.direction)),
+    )
+    with ctx.pose(lid_hinge=0.8):
+        ctx.expect_coaxial(
+            base.at(Axis(base_edge.center(), Axis.X.direction)),
+            lid.at(Axis(lid_edge.center(), Axis.X.direction)),
+            name="hinge_edges_stay_coaxial_while_opening",
+        )
     return ctx.report()

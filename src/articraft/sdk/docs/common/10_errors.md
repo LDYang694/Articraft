@@ -1,102 +1,77 @@
 # Errors
 
-The public SDK exports `SDKError` and `ValidationError`.
+The public SDK exports `SDKError`, `ValidationError`, and `LoopClosureError`.
 
 ```python
-from articraft.sdk import SDKError, ValidationError
+from articraft.sdk import LoopClosureError, SDKError, ValidationError
 ```
 
 ## `SDKError`
 
-`SDKError` is the base exception for errors defined by the Articraft SDK.
-Catch it when code should handle any SDK validation error in one place.
+Base class for errors defined by the Articraft SDK. Catch it only when a caller
+can handle any SDK validation failure in one place.
 
 ## `ValidationError`
 
-`ValidationError` is a subclass of `SDKError`. The SDK raises it when an
-object, part, shape, mesh, articulation, or named test selector does not satisfy
-the public contract. A failed authored assertion is recorded in `TestReport`
-instead of raising an exception.
+Raised when an assembly, rigid body, shape, joint, articulation, physics state,
+or named test selector violates the public contract. Examples include:
 
-Examples include these cases:
+- an empty or duplicate name;
+- invalid build123d or mesh geometry;
+- a joint endpoint outside its assembly;
+- a disconnected physical graph;
+- a cyclic or disconnected selected articulation tree;
+- a joint limit that excludes the frame-defined zero configuration;
+- a `PhysicsState` that violates a locked D6 axis or limit.
 
-- A required name is empty.
-- A part or shape name is duplicated where it must be unique.
-- A shape is empty, invalid, or has invalid mesh indices.
-- A color has the wrong length or a value outside zero through one.
-- An articulation refers to an unknown part.
-- Motion limits do not match the articulation type.
-- The part graph does not have exactly one root.
-
-## When validation runs
-
-The SDK validates data at several points.
-
-`ArticulatedObject(...)`, `Part(...)`, `Origin(...)`, and `MotionLimits(...)`
-validate their own values when you create them. `Part.add(...)` validates the
-shape name, geometry, and color before it stores the shape.
-`model.articulation(...)` validates the articulation and checks that both parts
-already exist.
-
-`model.validate()` checks the complete model. It checks every part and mesh
-again, so an invalid direct edit to a mutable `MeshGeometry` is caught before
-export. It also checks the full articulation tree.
+Value objects validate when they are constructed. `RigidBody.add(...)` validates
+the shape it stores, and `model.joint(...)` resolves its endpoints immediately.
+`model.validate()` calls `resolve()` and checks the whole graph, every body and
+shape, every articulation tree, and the reference state.
 
 ```python
-from articraft.sdk import ArticulatedObject, ValidationError
-
-
-model = ArticulatedObject("example")
-body = model.part("body")
-
 try:
     model.validate()
 except ValidationError as exc:
     print(exc)
 ```
 
-This example fails because `body` has no named shape yet.
+Authored assertions do not raise. `TestContext.check(...)` records failures in
+its `TestReport`.
 
-## Built in Python errors
+## `LoopClosureError`
 
-Not every public helper failure is an `SDKError`.
+A `ValidationError` raised when supplied tree coordinates cannot satisfy every
+closed-loop constraint. The message says which of two causes applies. When it
+names solved joint positions *pinned at their limits*, those limits are what
+stop the loop: widen them if the pose should be reachable, or tighten the
+driving DOF's limits so the unreachable pose is never requested. Otherwise the
+linkage geometry itself cannot reach the pose: shorten the drive's range, or
+fix the link lengths and joint frames that decide it.
 
-- Python raises `TypeError` when a required argument is missing or a value has
-  the wrong Python type for an operation.
-- Mesh builders and transforms often raise `ValueError` for an impossible
-  dimension, a zero rotation axis, or an invalid profile.
-- Manifold boolean helpers raise `ValueError` unless each input is a nonempty
-  closed manifold solid and the result has healthy topology. Empty results,
-  bad triangles, and unintended separate solid fragments are errors.
-- Field based welds and smooth cuts raise `ValueError` when their result has
-  unhealthy mesh geometry. The message includes issue counts and affected
-  bounds.
-- Allowance helpers raise `ValueError` when their required reason is empty.
+## Built-in Python errors
 
-Catch the narrow error that the operation documents. Do not catch an error only
-to continue with geometry that did not build correctly.
+Public helpers may use ordinary errors where appropriate:
 
-## Lookup errors
+- `TypeError` for a missing required argument or incompatible Python value;
+- `ValueError` for an impossible dimension, zero transform axis, invalid
+  profile, failed mesh boolean, or empty allowance reason;
+- `FileNotFoundError` and other `OSError` subclasses for external assets.
 
-Lookup helpers raise `ValidationError` when a name cannot be resolved.
+Catch the narrow error an operation documents. Do not catch an error merely to
+continue with geometry that did not build correctly.
 
-```python
-part = model.get_part("body")
-shape = part.get_shape("housing")
-joint = model.get_articulation("body_to_lid")
-```
+## Lookups
 
-Part names are model scoped. Shape names are part scoped. The same shape name
-may be used on two different parts, so a shape lookup always starts from a
-specific part.
-
-## Imports
-
-Import public SDK types from `articraft.sdk`.
+Lookup helpers raise `ValidationError` when a name cannot be resolved:
 
 ```python
-from articraft.sdk import ArticulatedObject, MotionLimits, Origin
+body = model.get_rigid_body("body")
+shape = body.shape("housing")
+joint = model.get_joint("body_to_lid")
 ```
 
-Paths such as `docs/sdk/common/20_core_types.md` are documentation paths. They
-are not Python modules.
+Body and joint names are assembly-scoped. Shape names are body-scoped.
+
+Import public values from `articraft.sdk`; documentation paths such as
+`docs/sdk/common/20_core_types.md` are not Python modules.

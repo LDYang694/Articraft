@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -10,19 +11,14 @@ import numpy as np
 import trimesh
 
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
-from articraft.sdk.errors import LoopClosureError, ValidationError
-from articraft.sdk.joints import (
-    Articulation,
-    ArticulationType,
-    Origin,
-    SpanTo,
-    partition_articulations,
-)
-from articraft.sdk.object import ArticulatedObject, Geometry
+from articraft.sdk.assembly import PhysicsState, RigidBodyAssembly
+from articraft.sdk.bodies import Geometry
+from articraft.sdk.errors import ValidationError
 
 Vec3: TypeAlias = tuple[float, float, float]
 Bounds: TypeAlias = tuple[Vec3, Vec3]
 Mat4: TypeAlias = np.ndarray
+Pose: TypeAlias = Mapping[str, float] | PhysicsState
 
 _NUMERICAL_CONTACT_DEPTH_TOLERANCE = 1e-6
 
@@ -100,24 +96,21 @@ class _GeometryComponent:
 
 
 class MeshCollisionKernel:
-    def __init__(self, model: ArticulatedObject, *, mesh_tolerance: float) -> None:
+    def __init__(self, model: RigidBodyAssembly, *, mesh_tolerance: float) -> None:
         if mesh_tolerance <= 0.0 or not math.isfinite(mesh_tolerance):
             raise ValidationError("mesh_tolerance must be a positive finite number")
         self.model = model
+        self.resolved = model.resolve()
         self.mesh_tolerance = float(mesh_tolerance)
         self._mesh_cache: dict[tuple[object, ...], _LocalMesh] = {}
-        self._loop_plan: tuple[list[Articulation], list[tuple[Articulation, np.ndarray]]] | None = (
-            None
-        )
-        self._loop_cache: dict[tuple[tuple[str, float], ...], dict[str, float]] = {}
 
-    def part_world_position(self, part_name: str, pose: dict[str, float]) -> Vec3:
+    def part_world_position(self, part_name: str, pose: Pose) -> Vec3:
         transform = self.world_transforms(pose).get(part_name)
         if transform is None:
             raise ValidationError(f"unknown part: {part_name!r}")
         return _array_to_vec3(transform[:3, 3]) or (0.0, 0.0, 0.0)
 
-    def part_world_vertices(self, part_name: str, pose: dict[str, float]) -> np.ndarray:
+    def part_world_vertices(self, part_name: str, pose: Pose) -> np.ndarray:
         entries = self._selector_entries(part_name, None, pose)
         vertices = [entry.world_vertices for entry in entries]
         if not vertices:
@@ -125,179 +118,45 @@ class MeshCollisionKernel:
         # Bounds vertices are sufficient for all projection and bounds checks.
         return np.concatenate(vertices, axis=0)
 
-    def part_world_bounds(self, part_name: str, pose: dict[str, float]) -> Bounds:
+    def part_world_bounds(self, part_name: str, pose: Pose) -> Bounds:
         return _points_bounds(self.part_world_vertices(part_name, pose))
 
     def shape_world_bounds(
         self,
         part_name: str,
         shape_name: str,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> Bounds:
         return self._selector_entries(part_name, shape_name, pose)[0].bounds
 
-    def world_transforms(self, pose: dict[str, float]) -> dict[str, Mat4]:
-        return self._place(self._solve(pose))
+    def world_transforms(self, pose: Pose) -> dict[str, Mat4]:
+        """Where every body sits, for a pose keyed by joint or by DOF."""
 
-    def _solve(self, pose: dict[str, float]) -> dict[str, float]:
-        """Complete an authored pose: drives first, then any closed loops.
+        if isinstance(pose, PhysicsState):
+            return self.resolved.world_transforms(pose)
+        state = self.resolved.forward_kinematics(self._dof_positions(pose))
+        return self.resolved.world_transforms(state)
 
-        A ram is solved in closed form by its drives. A linkage with no closed
-        form -- a four bar hood hinge, a folding brace -- is solved numerically
-        instead, so its follower joints take the values that keep every loop pin
-        closed.
+    def _dof_positions(self, pose: Mapping[str, float]) -> dict[str, float]:
+        """Accept ``{"hinge": 0.5}`` as well as ``{"hinge.rotZ": 0.5}``.
+
+        A joint with one degree of freedom is named unambiguously by the joint
+        alone, which is how every pose was written before joints could carry
+        six. The qualified form is only needed where it genuinely is.
         """
 
-        candidates, targets = self._loop_solution_plan()
-        # Whatever the caller posed leads; the rest of the ring follows.
-        followers = [item for item in candidates if item.name not in pose]
-        if not followers:
-            return self._resolve_drives(pose)
-        key = tuple(sorted((name, float(value)) for name, value in pose.items()))
-        cached = self._loop_cache.get(key)
-        if cached is not None:
-            return dict(cached)
-        solved = _solve_loops(self, pose, followers, targets)
-        if len(self._loop_cache) >= _LOOP_CACHE_LIMIT:
-            self._loop_cache.clear()
-        self._loop_cache[key] = dict(solved)
-        return solved
-
-    def _loop_solution_plan(
-        self,
-    ) -> tuple[list[Articulation], list[tuple[Articulation, np.ndarray]]]:
-        """Which joints follow, and where each loop pin sits in its child.
-
-        The pin location is read once at the authored rest pose, which is the
-        assembled configuration, so it is the same fact the exporter writes into
-        the USD joint frames.
-        """
-
-        if self._loop_plan is not None:
-            return self._loop_plan
-        tree, loops = partition_articulations(self.model.articulations)
-        candidates: list[Articulation] = []
-        targets: list[tuple[Articulation, np.ndarray]] = []
-        if loops:
-            parent_of = {item.child: item for item in tree}
-
-            def chain(part: str) -> list[Articulation]:
-                walked: list[Articulation] = []
-                while part in parent_of:
-                    walked.append(parent_of[part])
-                    part = parent_of[part].parent
-                return walked
-
-            rest = self._place(self._resolve_drives({}))
-            for closure in loops:
-                # Every movable joint on either side of the pin belongs to the
-                # loop. Which of them lead and which follow is decided per pose:
-                # whatever the caller poses drives, the rest are solved for.
-                ring = {
-                    item.name: item
-                    for item in (*chain(closure.parent), *chain(closure.child))
-                    if item.drive is None and item.articulation_type != ArticulationType.FIXED
-                }
-                if not ring:
-                    continue
-                pin = _apply(
-                    rest[closure.parent] @ _origin_matrix(closure.origin),
-                    np.zeros(3),
-                )
-                targets.append((closure, _apply(np.linalg.inv(rest[closure.child]), pin)))
-                candidates.extend(
-                    item for item in ring.values() if all(item is not seen for seen in candidates)
-                )
-        self._loop_plan = (candidates, targets)
-        return self._loop_plan
-
-    def _resolve_drives(self, pose: dict[str, float]) -> dict[str, float]:
-        """Fill in the joints the mechanism decides rather than the author.
-
-        Values handed in for driven joints are discarded: the mechanism owns
-        them. Drives are solved shallowest parent first, re-placing the model
-        after each, so a driven joint hanging off another driven joint reads a
-        final frame rather than a stale one.
-        """
-
-        driven = [item for item in self.model.articulations if item.drive is not None]
-        if not driven:
-            return pose
-        resolved = {
-            name: value
-            for name, value in pose.items()
-            if name not in {item.name for item in driven}
+        single = {
+            item.joint.name: item.joint.dof_id(item.joint.dofs[0])
+            for item in self.resolved.joints
+            if len(item.joint.dofs) == 1
         }
-        tree, _loops = partition_articulations(self.model.articulations)
-        parent_of = {item.child: item.parent for item in tree}
-
-        def _depth(part: str) -> int:
-            depth = 0
-            while part in parent_of:
-                part = parent_of[part]
-                depth += 1
-            return depth
-
-        for articulation in sorted(driven, key=lambda item: _depth(item.parent)):
-            drive = articulation.drive
-            if drive is None:
-                continue
-            placed = self._place(resolved)
-            target = placed.get(drive.part)
-            frame = placed.get(articulation.parent)
-            if target is None or frame is None:
-                continue
-            joint = frame @ _origin_matrix(articulation.origin)
-            anchor = _apply(target, np.asarray(drive.point, dtype=np.float64))
-            local = _apply(np.linalg.inv(joint), anchor)
-            if isinstance(drive, SpanTo):
-                # The axial component, signed: an anchor behind the origin must
-                # retract the joint, and any perpendicular offset is the frame's
-                # business, not extra travel.
-                axial = float(np.dot(local, _normalize(articulation.axis)))
-                resolved[articulation.name] = axial - drive.rest_length
-            else:
-                resolved[articulation.name] = _angle_about(
-                    _normalize(articulation.axis),
-                    np.asarray(drive.reference, dtype=np.float64),
-                    local,
-                )
-        return resolved
-
-    def _place(self, pose: dict[str, float]) -> dict[str, Mat4]:
-        parts = {part.name: part for part in self.model.parts}
-        children: dict[str, list[Articulation]] = {name: [] for name in parts}
-        child_names: set[str] = set()
-        # Only the spanning tree places parts. A loop closing joint is a
-        # constraint on the mechanism, not a second place to hang its child.
-        tree, _loops = partition_articulations(self.model.articulations)
-        for articulation in tree:
-            if articulation.parent in parts and articulation.child in parts:
-                children[articulation.parent].append(articulation)
-                child_names.add(articulation.child)
-
-        roots = [name for name in parts if name not in child_names]
-        transforms: dict[str, Mat4] = {}
-        stack = [(root, _identity()) for root in roots]
-        while stack:
-            part_name, transform = stack.pop()
-            if part_name in transforms:
-                continue
-            transforms[part_name] = transform
-            for articulation in children.get(part_name, []):
-                child_transform = (
-                    transform
-                    @ _origin_matrix(articulation.origin)
-                    @ _motion_matrix(articulation, float(pose.get(articulation.name, 0.0)))
-                )
-                stack.append((articulation.child, child_transform))
-        return transforms
+        return {single.get(key, key): float(value) for key, value in pose.items()}
 
     def collision_between(
         self,
         part_a: str,
         part_b: str,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         shape_a: str | None = None,
         shape_b: str | None = None,
@@ -323,7 +182,7 @@ class MeshCollisionKernel:
         self,
         part_a: str,
         part_b: str,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         shape_a: str | None = None,
         shape_b: str | None = None,
@@ -340,11 +199,11 @@ class MeshCollisionKernel:
 
     def pair_distances(
         self,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         max_contacts: int = 16,
     ) -> list[DistanceQuery]:
-        parts = [part.name for part in self.model.parts]
+        parts = [body.name for body in self.resolved.rigid_bodies]
         by_part: dict[str, list[_CollisionEntry]] = {part: [] for part in parts}
         for entry in self._all_entries(pose):
             by_part[entry.part_name].append(entry)
@@ -364,7 +223,7 @@ class MeshCollisionKernel:
 
     def meaningful_overlaps(
         self,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         overlap_tol: float,
         overlap_volume_tol: float,
@@ -414,7 +273,7 @@ class MeshCollisionKernel:
         contact_tol: float,
     ) -> list[GeometryConnectivityFinding]:
         findings: list[GeometryConnectivityFinding] = []
-        for part in self.model.parts:
+        for part in self.resolved.rigid_bodies:
             components = self._geometry_components(part.name)
             if len(components) <= 1:
                 continue
@@ -446,11 +305,11 @@ class MeshCollisionKernel:
             )
         return findings
 
-    def _all_entries(self, pose: dict[str, float]) -> list[_CollisionEntry]:
+    def _all_entries(self, pose: Pose) -> list[_CollisionEntry]:
         transforms = self.world_transforms(pose)
         return [
             self._entry(part.name, shape.name, shape.geometry, transforms[part.name])
-            for part in self.model.parts
+            for part in self.resolved.rigid_bodies
             for shape in part._iter_shapes()
         ]
 
@@ -458,15 +317,15 @@ class MeshCollisionKernel:
         self,
         part_name: str,
         shape_name: str | None,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> list[_CollisionEntry]:
-        part = self.model.get_part(part_name)
+        part = self.resolved.get_rigid_body(part_name)
         transform = self.world_transforms(pose).get(part.name)
         if transform is None:
             raise ValidationError(f"unknown part: {part.name!r}")
         if shape_name is not None:
             shape_name = str(shape_name).strip()
-            geometry = part.get_shape(shape_name)
+            geometry = part.shape(shape_name)
             return [self._entry(part.name, shape_name, geometry, transform)]
         return [
             self._entry(part.name, shape.name, shape.geometry, transform)
@@ -479,7 +338,7 @@ class MeshCollisionKernel:
         part_b: str,
         shape_a: str | None,
         shape_b: str | None,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> list[tuple[_CollisionEntry, _CollisionEntry]]:
         entries_a = self._selector_entries(part_a, shape_a, pose)
         entries_b = self._selector_entries(part_b, shape_b, pose)
@@ -523,7 +382,7 @@ class MeshCollisionKernel:
         return cached
 
     def _geometry_components(self, part_name: str) -> tuple[_GeometryComponent, ...]:
-        part = self.model.get_part(part_name)
+        part = self.resolved.get_rigid_body(part_name)
         components: list[_GeometryComponent] = []
         for shape in part._iter_shapes():
             mesh = self._local_mesh(shape.geometry).mesh
@@ -605,7 +464,10 @@ def _collide_entries(
     overlap_depth = _bounds_overlap_depth(entry_a.bounds, entry_b.bounds)
     if not collided and all(depth > 0.0 for depth in overlap_depth):
         solid_intersection = _solid_intersection_volume(entry_a, entry_b)
-        collided = solid_intersection is not None and solid_intersection > 0.0
+        if solid_intersection is not None:
+            collided = solid_intersection > 0.0
+        else:
+            collided = _open_mesh_buried(entry_a.world_mesh, entry_b.world_mesh)
     contacts = tuple(_contact_info(contact) for contact in getattr(result, "contacts", []) or [])
     return CollisionQuery(
         part_a=entry_a.part_name,
@@ -675,6 +537,56 @@ def _solid_intersection_volume(
     return _mesh_intersection_volume(entry_a.world_mesh, entry_b.world_mesh)
 
 
+def _open_mesh_buried(mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh) -> bool:
+    """Whether a mesh hides entirely inside a watertight one.
+
+    Surface collision misses full containment, and the boolean volume needs
+    two watertight operands. One watertight side is still decisive: with no
+    surface crossing, the other mesh is either wholly inside it or wholly
+    outside, so a few of its vertices answer for all of them. Two open
+    meshes stay undecidable and report no collision.
+    """
+
+    for container, contents in ((mesh_a, mesh_b), (mesh_b, mesh_a)):
+        if not container.is_watertight:
+            continue
+        vertices = np.asarray(contents.vertices, dtype=np.float64)
+        probes = vertices[:: max(1, len(vertices) // 8)][:8]
+        inside = _ray_parity_inside(container, probes)
+        if len(inside) and int(np.count_nonzero(inside)) * 2 > len(inside):
+            return True
+    return False
+
+
+def _ray_parity_inside(mesh: trimesh.Trimesh, points: np.ndarray) -> np.ndarray:
+    """Point-in-watertight-mesh by ray crossing parity (Moller-Trumbore).
+
+    Self-contained on purpose: trimesh's own containment queries require the
+    optional rtree package. A handful of probe points against every triangle
+    is cheap, and the caller takes a majority vote so one edge-grazing ray
+    cannot decide the answer alone.
+    """
+
+    triangles = np.asarray(mesh.triangles, dtype=np.float64)
+    origin_edge = triangles[:, 1] - triangles[:, 0]
+    far_edge = triangles[:, 2] - triangles[:, 0]
+    direction = np.asarray((0.2743, 0.6712, 0.6886), dtype=np.float64)
+    perpendicular = np.cross(direction, far_edge)
+    determinant = np.einsum("ij,ij->i", origin_edge, perpendicular)
+    valid = np.abs(determinant) > 1e-12
+    safe_det = np.where(valid, determinant, 1.0)
+    inside = np.zeros(len(points), dtype=bool)
+    for index, point in enumerate(points):
+        offset = point - triangles[:, 0]
+        u = np.einsum("ij,ij->i", offset, perpendicular) / safe_det
+        cross = np.cross(offset, origin_edge)
+        v = (cross @ direction) / safe_det
+        t = np.einsum("ij,ij->i", far_edge, cross) / safe_det
+        hits = valid & (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > 1e-9)
+        inside[index] = bool(np.count_nonzero(hits) % 2)
+    return inside
+
+
 def _meshes_have_overlapping_bounds(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:
     overlap = np.minimum(a.bounds[1], b.bounds[1]) - np.maximum(a.bounds[0], b.bounds[0])
     return bool(np.all(overlap > 0.0))
@@ -734,142 +646,6 @@ def _mesh_to_bvh(mesh: trimesh.Trimesh) -> object:
     model.addSubModel(vertices, faces)
     model.endModel()
     return model
-
-
-def _identity() -> Mat4:
-    return np.identity(4, dtype=np.float64)
-
-
-def _origin_matrix(origin: Origin) -> Mat4:
-    matrix = _rpy_matrix(origin.rpy)
-    matrix[:3, 3] = np.asarray(origin.xyz, dtype=np.float64)
-    return matrix
-
-
-def _motion_matrix(articulation: Articulation, value: float) -> Mat4:
-    if articulation.articulation_type == ArticulationType.FIXED:
-        return _identity()
-    axis = _normalize(articulation.axis)
-    if articulation.articulation_type == ArticulationType.PRISMATIC:
-        matrix = _identity()
-        matrix[:3, 3] = axis * value
-        return matrix
-    return _axis_angle_matrix(axis, value)
-
-
-def _rpy_matrix(rpy: Vec3) -> Mat4:
-    return np.asarray(trimesh.transformations.euler_matrix(*rpy, axes="sxyz"), dtype=np.float64)
-
-
-def _axis_angle_matrix(axis: np.ndarray, angle: float) -> Mat4:
-    return np.asarray(
-        trimesh.transformations.rotation_matrix(angle, axis),
-        dtype=np.float64,
-    )
-
-
-_LOOP_CACHE_LIMIT = 512
-_LOOP_TOLERANCE = 1e-6
-_LOOP_STEPS = 5
-
-
-def _solve_loops(
-    kernel: MeshCollisionKernel,
-    pose: dict[str, float],
-    followers: list[Articulation],
-    targets: list[tuple[Articulation, np.ndarray]],
-) -> dict[str, float]:
-    """Find follower values that keep every loop pin closed at this pose.
-
-    Walks from the rest pose to the authored one in a few steps, solving at each
-    and carrying the answer forward. A linkage has more than one way to be
-    assembled -- a four bar can sit elbow up or elbow down -- and stepping out
-    from rest keeps the model on the branch it was authored in instead of
-    letting it snap through itself. Rest is exact by construction: drives solve
-    to zero there and the pins were measured there.
-    """
-
-    def assemble(scale: float, values: np.ndarray) -> dict[str, float]:
-        stepped = kernel._resolve_drives({name: value * scale for name, value in pose.items()})
-        stepped.update(
-            {item.name: float(value) for item, value in zip(followers, values, strict=True)}
-        )
-        return stepped
-
-    def residual(scale: float, values: np.ndarray) -> np.ndarray:
-        placed = kernel._place(assemble(scale, values))
-        rows: list[float] = []
-        for closure, local in targets:
-            pin = _apply(placed[closure.parent] @ _origin_matrix(closure.origin), np.zeros(3))
-            rows.extend(pin - _apply(placed[closure.child], local))
-        return np.asarray(rows, dtype=np.float64)
-
-    values = np.zeros(len(followers), dtype=np.float64)
-    for step in range(1, _LOOP_STEPS + 1):
-        scale = step / _LOOP_STEPS
-        damping = 1e-6
-        for _ in range(40):
-            current = residual(scale, values)
-            error = float(np.linalg.norm(current))
-            if error < _LOOP_TOLERANCE:
-                break
-            jacobian = np.empty((len(current), len(values)), dtype=np.float64)
-            for index in range(len(values)):
-                nudged = values.copy()
-                nudged[index] += 1e-6
-                jacobian[:, index] = (residual(scale, nudged) - current) / 1e-6
-            # Levenberg-Marquardt: an over-center linkage passes through poses
-            # where the Jacobian is singular, and plain Gauss-Newton throws the
-            # mechanism across the room there.
-            normal = jacobian.T @ jacobian + damping * np.eye(len(values))
-            delta = np.linalg.solve(normal, -jacobian.T @ current)
-            trial = values + delta
-            if float(np.linalg.norm(residual(scale, trial))) < error:
-                values, damping = trial, max(damping * 0.5, 1e-9)
-            else:
-                damping *= 8.0
-                if damping > 1e6:
-                    break
-
-    error = float(np.linalg.norm(residual(1.0, values)))
-    if error > 1e-4:
-        names = ", ".join(repr(closure.name) for closure, _ in targets)
-        raise LoopClosureError(
-            f"pose leaves loop closure {names} open by {error * 1000:.1f} mm; the mechanism "
-            "cannot reach this pose. Tighten the driving joint's motion limits or fix the "
-            "link geometry that sets the range."
-        )
-    return assemble(1.0, values)
-
-
-def _apply(matrix: Mat4, point: np.ndarray) -> np.ndarray:
-    return (matrix[:3, :3] @ point) + matrix[:3, 3]
-
-
-def _angle_about(axis: np.ndarray, reference: np.ndarray, target: np.ndarray) -> float:
-    """Signed rotation about ``axis`` that swings ``reference`` onto ``target``.
-
-    Both vectors are flattened into the plane the joint actually turns in, so a
-    target off the plane still gives the best in-plane answer instead of nothing.
-    """
-
-    flat_reference = reference - axis * float(np.dot(reference, axis))
-    flat_target = target - axis * float(np.dot(target, axis))
-    if np.linalg.norm(flat_reference) < 1e-12 or np.linalg.norm(flat_target) < 1e-12:
-        return 0.0
-    flat_reference = flat_reference / np.linalg.norm(flat_reference)
-    flat_target = flat_target / np.linalg.norm(flat_target)
-    cosine = float(np.clip(np.dot(flat_reference, flat_target), -1.0, 1.0))
-    sine = float(np.dot(axis, np.cross(flat_reference, flat_target)))
-    return math.atan2(sine, cosine)
-
-
-def _normalize(axis: Vec3) -> np.ndarray:
-    vector = np.asarray(axis, dtype=np.float64)
-    length = math.hypot(*axis)
-    if length <= 0.0:
-        raise ValidationError("articulation axis must be non-zero")
-    return vector / length
 
 
 def _fcl_transform(matrix: Mat4) -> object:

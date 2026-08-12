@@ -10,13 +10,13 @@ from typing import TypeAlias, cast
 import numpy as np
 import trimesh
 
+from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
-from articraft.sdk.errors import ValidationError
-from articraft.sdk.joints import _as_name
+from articraft.sdk.errors import LoopClosureError, ValidationError
+from articraft.sdk.frames import WORLD, BodyFrame, JointFrame, _WorldEndpoint
 from articraft.sdk.mass import MassProperties
-from articraft.sdk.physics import PhysicsScene
+from articraft.sdk.physics import BodyState, PhysicsScene
 
-Vec3: TypeAlias = tuple[float, float, float]
 Mat4: TypeAlias = np.ndarray
 Matrix4: TypeAlias = tuple[tuple[float, float, float, float], ...]
 
@@ -38,18 +38,6 @@ class JointAxis(StrEnum):
     @property
     def component(self) -> int:
         return {"X": 0, "Y": 1, "Z": 2}[self.value[-1]]
-
-
-@dataclass(frozen=True, slots=True)
-class JointFrame:
-    """A joint endpoint pose in its rigid body, in metres and radians."""
-
-    xyz: Vec3 = (0.0, 0.0, 0.0)
-    rpy: Vec3 = (0.0, 0.0, 0.0)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "xyz", _as_vec3(self.xyz, field_name="joint frame xyz"))
-        object.__setattr__(self, "rpy", _as_vec3(self.rpy, field_name="joint frame rpy"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,17 +72,7 @@ class JointDOF:
         object.__setattr__(self, "limits", (lower, upper))
 
 
-@dataclass(frozen=True, slots=True)
-class _WorldEndpoint:
-    def __repr__(self) -> str:
-        return "WORLD"
-
-
-WORLD = _WorldEndpoint()
-"""The USD world endpoint. A joint may connect one rigid body to ``WORLD``."""
-
 JointEndpoint: TypeAlias = RigidBody | _WorldEndpoint
-JointEndpointRef: TypeAlias = RigidBodyRef | _WorldEndpoint
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -109,7 +87,7 @@ class Joint:
     dofs: tuple[JointDOF, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _as_name(self.name, field_name="joint name"))
+        object.__setattr__(self, "name", _as_identifier(self.name, field_name="joint name"))
         if not isinstance(self.frame0, JointFrame) or not isinstance(self.frame1, JointFrame):
             raise ValidationError(f"joint {self.name!r} frames must be JointFrame values")
         try:
@@ -161,7 +139,7 @@ class Articulation:
     joints: tuple[Joint, ...] | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _as_name(self.name, field_name="articulation name"))
+        object.__setattr__(self, "name", _as_identifier(self.name, field_name="articulation name"))
         if self.joints is not None:
             try:
                 joints = tuple(self.joints)
@@ -209,6 +187,27 @@ class PhysicsState:
             return np.asarray(self.body_poses[name], dtype=np.float64)
         except KeyError as exc:
             raise ValidationError(f"physics state has no pose for rigid body {name!r}") from exc
+
+    def frame_in(
+        self,
+        source: BodyFrame,
+        body: RigidBody | _WorldEndpoint = WORLD,
+    ) -> BodyFrame:
+        """Express one body-bound frame in another body's coordinates.
+
+        A state stores poses by body *name*, so bodies here resolve by name
+        alone. ``RigidBodyAssembly.frame_in`` additionally checks identity;
+        prefer it while authoring.
+        """
+
+        source_world = self._body_matrix(source.body) @ _frame_matrix(source.frame)
+        local = np.linalg.inv(self._body_matrix(body)) @ source_world
+        return BodyFrame(body, _matrix_frame(local))
+
+    def _body_matrix(self, body: RigidBody | _WorldEndpoint) -> Mat4:
+        if body is WORLD:
+            return np.identity(4, dtype=np.float64)
+        return self.matrix(cast(RigidBody, body))
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,13 +342,8 @@ class ResolvedRigidBodyAssembly:
         return PhysicsState(matrices, dof_positions=derived)
 
     def forward_kinematics(self, dof_positions: Mapping[str, float] | None = None) -> PhysicsState:
-        """Pose an acyclic physical graph; closed loops require a solver or body poses."""
+        """Pose the articulation tree and solve unspecified coordinates that close loops."""
 
-        if self.has_closed_loops:
-            raise ValidationError(
-                "closed-loop assemblies cannot be posed from joint positions; "
-                "provide a complete PhysicsState or use a physics solver"
-            )
         positions = {
             _as_name(name, field_name="joint position"): _finite(
                 value, field_name=f"joint position {name!r}"
@@ -369,12 +363,40 @@ class ResolvedRigidBodyAssembly:
                         f"limits {dof.limits!r}"
                     )
 
-        transforms = _propagate_transforms(
-            self.rigid_bodies,
-            tuple(item.joint for item in self.joints),
-            self.articulations,
-            positions,
-        )
+        tree = tuple(item.joint for item in self.joints if not item.exclude_from_articulation)
+        closures = tuple(item.joint for item in self.joints if item.exclude_from_articulation)
+        if self.has_closed_loops and _edge_graph_has_cycle(tree):
+            raise ValidationError(
+                "closed-loop forward kinematics requires an explicit articulation tree; "
+                "provide a complete PhysicsState for a maximal-coordinate assembly"
+            )
+        closure_dofs = {joint.dof_id(dof) for joint in closures for dof in joint.dofs}
+        supplied_closure_dofs = sorted(set(positions) & closure_dofs)
+        if supplied_closure_dofs:
+            raise ValidationError(
+                "closure joint positions are derived from body poses and cannot be supplied: "
+                f"{supplied_closure_dofs!r}"
+            )
+        if closures:
+            positions = _solve_closed_loops(
+                self.rigid_bodies,
+                tree,
+                closures,
+                self.articulations,
+                positions,
+            )
+        try:
+            transforms = _propagate_transforms(
+                self.rigid_bodies,
+                tree,
+                self.articulations,
+                positions,
+            )
+        except ValidationError as exc:
+            raise ValidationError(
+                "forward kinematics requires one spanning articulation tree; "
+                "provide a complete PhysicsState for this assembly"
+            ) from exc
         return self.validate_state(PhysicsState(transforms, dof_positions=positions))
 
 
@@ -389,7 +411,7 @@ class RigidBodyAssembly:
     articulations: list[Articulation] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        self.name = _as_name(self.name, field_name="assembly name")
+        self.name = _as_identifier(self.name, field_name="assembly name")
         if not isinstance(self.scene, PhysicsScene):
             raise ValidationError(f"assembly {self.name!r} scene must be a PhysicsScene")
 
@@ -397,8 +419,18 @@ class RigidBodyAssembly:
     def meters_per_unit(self) -> float:
         return 1.0
 
-    def rigid_body(self, name: str, *, mass_properties: MassProperties | None = None) -> RigidBody:
-        body = RigidBody(name, mass_properties=mass_properties)
+    def rigid_body(
+        self,
+        name: str,
+        *,
+        mass_properties: MassProperties | None = None,
+        body_state: BodyState | None = None,
+    ) -> RigidBody:
+        body = RigidBody(
+            name,
+            mass_properties=mass_properties,
+            body_state=BodyState() if body_state is None else body_state,
+        )
         if any(existing.name == body.name for existing in self.rigid_bodies):
             raise ValidationError(f"duplicate rigid body name: {body.name!r}")
         self.rigid_bodies.append(body)
@@ -407,25 +439,52 @@ class RigidBodyAssembly:
     def joint(
         self,
         name: str,
+        endpoint0: BodyFrame,
+        endpoint1: BodyFrame,
         *,
-        body0: JointEndpointRef,
-        frame0: JointFrame | None = None,
-        body1: JointEndpointRef,
-        frame1: JointFrame | None = None,
         dofs: Iterable[JointDOF] = (),
     ) -> Joint:
+        if not isinstance(endpoint0, BodyFrame) or not isinstance(endpoint1, BodyFrame):
+            raise ValidationError("joint endpoints must be body.at(...) or WORLD.at(...) frames")
         joint = Joint(
             name=name,
-            body0=self._endpoint(body0, field_name="body0"),
-            frame0=JointFrame() if frame0 is None else frame0,
-            body1=self._endpoint(body1, field_name="body1"),
-            frame1=JointFrame() if frame1 is None else frame1,
+            body0=self._endpoint(endpoint0.body, field_name="endpoint0"),
+            frame0=endpoint0.frame,
+            body1=self._endpoint(endpoint1.body, field_name="endpoint1"),
+            frame1=endpoint1.frame,
             dofs=tuple(dofs),
         )
         if any(existing.name == joint.name for existing in self.joints):
             raise ValidationError(f"duplicate joint name: {joint.name!r}")
         self.joints.append(joint)
         return joint
+
+    def frame_in(
+        self,
+        source: BodyFrame,
+        body: RigidBody | _WorldEndpoint = WORLD,
+    ) -> BodyFrame:
+        """Express a frame in another body at the assembly's reference state."""
+
+        if not isinstance(source, BodyFrame):
+            raise ValidationError("source must be a body.at(...) or WORLD.at(...) frame")
+        if source.body is not WORLD:
+            source_body = self.get_rigid_body(cast(RigidBody, source.body))
+            if source_body is not source.body:
+                raise ValidationError("source frame belongs to another assembly")
+        if body is not WORLD:
+            resolved_body = self.get_rigid_body(cast(RigidBody, body))
+            if resolved_body is not body:
+                raise ValidationError("target body belongs to another assembly")
+        try:
+            reference = self.resolve().reference_state
+        except ValidationError as exc:
+            raise ValidationError(
+                "frame_in reads the assembly's reference state, so the bodies and "
+                "joints that place both frames must be authored first; "
+                f"resolving failed: {exc}"
+            ) from exc
+        return reference.frame_in(source, body)
 
     def articulation(
         self,
@@ -471,7 +530,7 @@ class RigidBodyAssembly:
         self.resolve()
 
     def resolve(self) -> ResolvedRigidBodyAssembly:
-        self.name = _as_name(self.name, field_name="assembly name")
+        self.name = _as_identifier(self.name, field_name="assembly name")
         _validate_members(self)
         resolved_articulations, selected_by_joint, articulated_bodies = _resolve_articulations(self)
         resolved_joints = tuple(
@@ -525,13 +584,16 @@ class RigidBodyAssembly:
     ) -> PhysicsState:
         return self.resolve().validate_state(PhysicsState(body_poses, dof_positions=dof_positions))
 
-    def _endpoint(self, endpoint: JointEndpointRef, *, field_name: str) -> JointEndpoint:
+    def _endpoint(self, endpoint: JointEndpoint, *, field_name: str) -> JointEndpoint:
         if endpoint is WORLD:
             return WORLD
         try:
-            return self.get_rigid_body(cast(RigidBodyRef, endpoint))
+            resolved = self.get_rigid_body(cast(RigidBodyRef, endpoint))
         except ValidationError as exc:
             raise ValidationError(f"unknown {field_name} rigid body: {endpoint!r}") from exc
+        if resolved is not endpoint:
+            raise ValidationError(f"{field_name} frame belongs to another assembly")
+        return resolved
 
     def _root(self, root: ArticulationRootRef) -> RigidBody | Joint:
         if isinstance(root, RigidBody):
@@ -734,6 +796,211 @@ def _propagate_transforms(
     return {body.name: transforms[body] for body in bodies}
 
 
+_LOOP_STEPS = 5
+# The acceptance gate, equal to validate_state's per-axis tolerance so a
+# solve is accepted exactly when validation would pass it. The Newton loop
+# itself polishes two decades further so accepted solves clear the gate
+# with margin rather than landing on it.
+_LOOP_TOLERANCE = 1e-6
+
+
+def _solve_closed_loops(
+    bodies: tuple[RigidBody, ...],
+    tree: tuple[Joint, ...],
+    closures: tuple[Joint, ...],
+    articulations: tuple[ResolvedArticulation, ...],
+    positions: dict[str, float],
+) -> dict[str, float]:
+    """Solve unspecified tree DOFs so every excluded constraint stays closed.
+
+    The articulation tree supplies coordinates; excluded joints supply residuals.
+    Walking from the zero configuration to the requested pose keeps linkages on
+    the assembly branch they were authored in instead of snapping through a
+    singular pose.
+    """
+
+    active_closures: list[Joint] = []
+    candidates: list[tuple[Joint, JointDOF]] = []
+    seen: set[str] = set()
+    for closure in closures:
+        path = _joint_path(tree, closure.body0, closure.body1)
+        if path is None:
+            raise ValidationError(
+                f"closure joint {closure.name!r} is not spanned by one articulation tree; "
+                "provide a complete PhysicsState for this assembly"
+            )
+        active_closures.append(closure)
+        for joint in path:
+            for dof in joint.dofs:
+                dof_id = joint.dof_id(dof)
+                if dof_id not in positions and dof_id not in seen:
+                    seen.add(dof_id)
+                    candidates.append((joint, dof))
+
+    locked = {
+        closure: tuple(axis for axis in JointAxis if axis not in {dof.axis for dof in closure.dofs})
+        for closure in active_closures
+    }
+    if not any(locked.values()):
+        return positions
+
+    limits = tuple(dof.limits for _, dof in candidates)
+    periodic = tuple(
+        dof.limits is not None
+        and cast(JointAxis, dof.axis).is_rotational
+        and dof.limits[1] - dof.limits[0] >= 2.0 * math.pi - 1e-9
+        for _, dof in candidates
+    )
+
+    def assemble(scale: float, values: np.ndarray) -> dict[str, float]:
+        result = {name: value * scale for name, value in positions.items()}
+        for (joint, dof), value in zip(candidates, values, strict=True):
+            result[joint.dof_id(dof)] = float(value)
+        return result
+
+    def project(values: np.ndarray) -> np.ndarray:
+        return np.asarray(
+            [
+                _project_value(float(value), bound, wraps)
+                for value, bound, wraps in zip(values, limits, periodic, strict=True)
+            ],
+            dtype=np.float64,
+        )
+
+    def residual(scale: float, values: np.ndarray) -> np.ndarray:
+        placed = _propagate_transforms(
+            bodies,
+            tree,
+            articulations,
+            assemble(scale, values),
+        )
+        rows: list[float] = []
+        for closure in active_closures:
+            joint_values = _joint_values(closure, placed)
+            rows.extend(joint_values[axis] for axis in locked[closure])
+        return np.asarray(rows, dtype=np.float64)
+
+    values = np.zeros(len(candidates), dtype=np.float64)
+    # With no unknowns left -- every ring coordinate supplied by the caller --
+    # there is nothing to iterate, but the closure residual still decides
+    # whether the supplied pose keeps the loop assembled.
+    steps = _LOOP_STEPS if candidates else 0
+    for step in range(1, steps + 1):
+        scale = step / _LOOP_STEPS
+        damping = 1e-6
+        for _ in range(40):
+            current = residual(scale, values)
+            error = float(np.linalg.norm(current))
+            if error < _LOOP_TOLERANCE * 1e-2:
+                break
+            jacobian = np.empty((len(current), len(values)), dtype=np.float64)
+            for index in range(len(values)):
+                # Differentiate into the feasible interval: a nudge past a
+                # limit would sample the pose the solver may not return.
+                bound = limits[index]
+                nudge = 1e-6
+                if bound is not None and not periodic[index] and values[index] + nudge > bound[1]:
+                    nudge = -1e-6
+                nudged = values.copy()
+                nudged[index] += nudge
+                jacobian[:, index] = (residual(scale, nudged) - current) / nudge
+            normal = jacobian.T @ jacobian + damping * np.eye(len(values))
+            try:
+                delta = np.linalg.solve(normal, -jacobian.T @ current)
+            except np.linalg.LinAlgError:
+                break
+            # Project the iterate itself, not just its evaluation: an iterate
+            # parked beyond a limit sees a flat residual and never comes back.
+            trial = project(values + delta)
+            if float(np.linalg.norm(residual(scale, trial))) < error:
+                values = trial
+                damping = max(damping * 0.5, 1e-9)
+            else:
+                damping *= 8.0
+                if damping > 1e6:
+                    break
+
+    # One gate, equal to validate_state's per-axis tolerance: anything
+    # accepted here passes validation, anything rejected names the loop.
+    worst = float(np.max(np.abs(residual(1.0, values)), initial=0.0))
+    if worst > _LOOP_TOLERANCE:
+        names = ", ".join(repr(closure.name) for closure in active_closures)
+        pinned = sorted(
+            joint.dof_id(dof)
+            for ((joint, dof), value, bound, wraps) in zip(
+                candidates, values, limits, periodic, strict=True
+            )
+            if bound is not None and not wraps and (value <= bound[0] or value >= bound[1])
+        )
+        if pinned:
+            raise LoopClosureError(
+                f"pose leaves loop closure {names} open (constraint residual {worst:.3g}) "
+                f"with solved joint positions pinned at their limits: {pinned!r}; "
+                "widen those limits if the mechanism should reach this pose"
+            )
+        if not candidates:
+            raise LoopClosureError(
+                f"pose leaves loop closure {names} open (constraint residual {worst:.3g}); "
+                "every ring coordinate was supplied -- adjust them so the loop closes, "
+                "or leave one unspecified for the solver to derive"
+            )
+        raise LoopClosureError(
+            f"pose leaves loop closure {names} open (constraint residual {worst:.3g}); "
+            "the mechanism cannot reach this pose"
+        )
+    return assemble(1.0, values)
+
+
+def _joint_path(
+    joints: tuple[Joint, ...],
+    start: JointEndpoint,
+    end: JointEndpoint,
+) -> tuple[Joint, ...] | None:
+    adjacency: dict[JointEndpoint, list[tuple[JointEndpoint, Joint]]] = {}
+    for joint in joints:
+        adjacency.setdefault(joint.body0, []).append((joint.body1, joint))
+        adjacency.setdefault(joint.body1, []).append((joint.body0, joint))
+    previous: dict[JointEndpoint, tuple[JointEndpoint, Joint] | None] = {start: None}
+    pending = [start]
+    while pending and end not in previous:
+        node = pending.pop(0)
+        for neighbour, joint in adjacency.get(node, []):
+            if neighbour in previous:
+                continue
+            previous[neighbour] = (node, joint)
+            pending.append(neighbour)
+    if end not in previous:
+        return None
+    path: list[Joint] = []
+    node = end
+    while (step := previous[node]) is not None:
+        node, joint = step
+        path.append(joint)
+    path.reverse()
+    return tuple(path)
+
+
+def _clamp(value: float, limits: tuple[float, float] | None) -> float:
+    if limits is None:
+        return value
+    return min(max(value, limits[0]), limits[1])
+
+
+def _project_value(value: float, limits: tuple[float, float] | None, periodic: bool) -> float:
+    """Return the nearest in-range coordinate: wrapped if periodic, clamped if not.
+
+    A full-circle hinge has no wall at +-pi: the coordinate is periodic, and
+    clamping it would strand a solution that continues on the other side of
+    the seam.
+    """
+
+    if limits is None or not periodic:
+        return _clamp(value, limits)
+    span = limits[1] - limits[0]
+    wrapped = limits[0] + math.fmod(value - limits[0], span)
+    return wrapped + span if wrapped < limits[0] else wrapped
+
+
 def _values_from(joint: Joint, positions: Mapping[str, float]) -> dict[JointAxis, float]:
     """The six axis values implied by the joint values a caller supplied."""
 
@@ -785,15 +1052,76 @@ def _joint_values(joint: Joint, transforms: Mapping[str, Mat4]) -> dict[JointAxi
     relative = np.linalg.inv(body0 @ _frame_matrix(joint.frame0)) @ (
         body1 @ _frame_matrix(joint.frame1)
     )
-    rotation = trimesh.transformations.euler_from_matrix(relative, axes="sxyz")
     return {
         JointAxis.TRANS_X: float(relative[0, 3]),
         JointAxis.TRANS_Y: float(relative[1, 3]),
         JointAxis.TRANS_Z: float(relative[2, 3]),
-        JointAxis.ROT_X: float(rotation[0]),
-        JointAxis.ROT_Y: float(rotation[1]),
-        JointAxis.ROT_Z: float(rotation[2]),
+        **_rotation_values(joint, relative),
     }
+
+
+def _rotation_values(joint: Joint, relative: Mat4) -> dict[JointAxis, float]:
+    """Per-axis rotation readings that stay honest over the full circle.
+
+    An Euler decomposition confines its middle angle to [-pi/2, pi/2]; past
+    that, a pure Y rotation of 1.7 rad reads as (-pi, 1.44, -pi) and a healthy
+    hinge appears to violate its locked axes. Joints with at most one free
+    rotational axis -- fixed, prismatic, revolute, cylindrical -- are measured
+    against that axis directly instead, which has no branch to fall off. Only
+    joints with two or more free rotational axes still read through the Euler
+    decomposition, whose angles are what their motion model composes.
+    """
+
+    free = [
+        cast(JointAxis, dof.axis) for dof in joint.dofs if cast(JointAxis, dof.axis).is_rotational
+    ]
+    rotation = np.asarray(relative[:3, :3], dtype=np.float64)
+    if len(free) > 1:
+        angles = trimesh.transformations.euler_from_matrix(relative, axes="sxyz")
+        return {
+            JointAxis.ROT_X: float(angles[0]),
+            JointAxis.ROT_Y: float(angles[1]),
+            JointAxis.ROT_Z: float(angles[2]),
+        }
+    values = {JointAxis.ROT_X: 0.0, JointAxis.ROT_Y: 0.0, JointAxis.ROT_Z: 0.0}
+    if free:
+        direction = np.zeros(3, dtype=np.float64)
+        direction[free[0].component] = 1.0
+        # The best-fit angle about a known axis: for R = Rot(a, angle),
+        # vee((R - R^T)/2) = sin(angle) * a and tr(R) - a.R.a = 2 cos(angle).
+        skew = (rotation - rotation.T) * 0.5
+        sine = float(direction @ (skew[2, 1], skew[0, 2], skew[1, 0]))
+        cosine = float(np.trace(rotation) - direction @ rotation @ direction) * 0.5
+        angle = math.atan2(sine, cosine)
+        values[free[0]] = angle
+        rotation = (
+            np.asarray(
+                trimesh.transformations.rotation_matrix(-angle, direction),
+                dtype=np.float64,
+            )[:3, :3]
+            @ rotation
+        )
+    leftover = _rotation_vector(rotation)
+    for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z):
+        if axis not in free:
+            values[axis] = float(leftover[axis.component])
+    return values
+
+
+def _rotation_vector(rotation: np.ndarray) -> np.ndarray:
+    """The axis-angle vector of a rotation matrix; zero for the identity."""
+
+    embedded = np.identity(4, dtype=np.float64)
+    embedded[:3, :3] = rotation
+    quaternion = trimesh.transformations.quaternion_from_matrix(embedded)
+    vector = np.asarray(quaternion[1:], dtype=np.float64)
+    length = float(np.linalg.norm(vector))
+    if length < 1e-12:
+        return np.zeros(3, dtype=np.float64)
+    angle = 2.0 * math.atan2(length, float(quaternion[0]))
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+    return vector * (angle / length)
 
 
 def _motion_matrix(joint: Joint, positions: Mapping[str, float]) -> Mat4:
@@ -876,18 +1204,6 @@ def _body_name(value: RigidBodyRef, *, field_name: str) -> str:
     return _as_name(value if isinstance(value, str) else value.name, field_name=field_name)
 
 
-def _as_vec3(value: Sequence[float], *, field_name: str) -> Vec3:
-    if isinstance(value, (str, bytes)):
-        raise ValidationError(f"{field_name} must have 3 numeric values")
-    try:
-        values = tuple(float(component) for component in value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValidationError(f"{field_name} must have 3 numeric values") from exc
-    if len(values) != 3 or any(not math.isfinite(component) for component in values):
-        raise ValidationError(f"{field_name} must have 3 finite numeric values")
-    return cast(Vec3, values)
-
-
 def _finite(value: object, *, field_name: str) -> float:
     try:
         result = float(value)  # type: ignore[arg-type]
@@ -926,3 +1242,11 @@ def _as_matrix4(value: object, *, field_name: str) -> Mat4:
 
 def _matrix_tuple(matrix: Mat4) -> Matrix4:
     return cast(Matrix4, tuple(tuple(float(value) for value in row) for row in matrix))
+
+
+def _matrix_frame(matrix: Mat4) -> JointFrame:
+    rpy = trimesh.transformations.euler_from_matrix(matrix, axes="sxyz")
+    return JointFrame(
+        xyz=(float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])),
+        rpy=(float(rpy[0]), float(rpy[1]), float(rpy[2])),
+    )

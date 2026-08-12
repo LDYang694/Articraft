@@ -16,8 +16,10 @@ class ValidationError(SDKError):
 class LoopClosureError(ValidationError):
     """Raised when a pose cannot keep a closed loop assembled.
 
-    The mechanism was driven past what its linkage allows, so no placement of
-    the follower joints keeps the loop's pin closed. The pose is unreachable,
-    not merely awkward: tighten the driving joint's motion limits, or fix the
-    link geometry that decides the range.
+    No placement of the follower joints keeps the loop's pin closed at this
+    pose. The message says which of two causes applies: when it names solved
+    joint positions pinned at their limits, those limits are what stop the
+    loop -- widen them if the pose should be reachable. Otherwise the link
+    geometry itself cannot reach the pose: shorten the drive's range or fix
+    the link lengths that decide it.
     """

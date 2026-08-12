@@ -9,14 +9,14 @@ from articraft.errors import ValidationError
 from articraft.sdk import (
     AllowedMeshIssues,
     AllowedOverlap,
-    ArticulatedObject,
-    ArticulationType,
     BoxGeometry,
     FailureKind,
+    JointAxis,
+    JointDOF,
+    JointFrame,
     MeshGeometry,
     MeshHealthIssue,
-    MotionLimits,
-    Origin,
+    RigidBodyAssembly,
     SphereGeometry,
     TestContext,
 )
@@ -26,21 +26,16 @@ def add_box(part, name: str, *, size: float = 1.0, x: float = 0.0) -> None:
     part.add(Pos(X=x) * Box(size, size, size), name=name)
 
 
-def fixed(model: ArticulatedObject, name: str, parent, child, xyz=(0.0, 0.0, 0.0)):
-    return model.articulation(
-        name,
-        ArticulationType.FIXED,
-        parent,
-        child,
-        origin=Origin(xyz=xyz),
-    )
+def fixed(model: RigidBodyAssembly, name: str, parent, child, xyz=(0.0, 0.0, 0.0)):
+    """A joint with no free axes is a fixed joint."""
+    return model.joint(name, parent.at(JointFrame(xyz=xyz)), child.at(JointFrame()))
 
 
 def test_report_records_warnings_and_shape_scoped_allowances() -> None:
-    model = ArticulatedObject("report")
-    base = model.part("base")
+    model = RigidBodyAssembly("report")
+    base = model.rigid_body("base")
     add_box(base, "outer")
-    insert = model.part("insert")
+    insert = model.rigid_body("insert")
     add_box(insert, "inner", size=0.25)
     ctx = TestContext(model)
 
@@ -69,8 +64,8 @@ def test_report_records_warnings_and_shape_scoped_allowances() -> None:
 
 
 def test_mesh_health_allowance_is_exact_and_requires_a_reason() -> None:
-    model = ArticulatedObject("mesh-health")
-    base = model.part("base")
+    model = RigidBodyAssembly("mesh_health")
+    base = model.rigid_body("base")
     box = BoxGeometry((1.0, 1.0, 1.0))
     open_box = MeshGeometry(box.vertices, box.faces[:-1])
     base.add(open_box, name="intentional-sheet")
@@ -115,8 +110,8 @@ def test_mesh_health_allowance_is_exact_and_requires_a_reason() -> None:
 
 
 def test_named_shape_queries_and_world_bounds() -> None:
-    model = ArticulatedObject("queries")
-    root = model.part("root")
+    model = RigidBodyAssembly("queries")
+    root = model.rigid_body("root")
     add_box(root, "left", x=-1.0)
     add_box(root, "right", x=1.0)
     ctx = TestContext(model)
@@ -130,9 +125,22 @@ def test_named_shape_queries_and_world_bounds() -> None:
         ctx.shape_world_bounds("root", "missing")
 
 
+def test_complete_physics_state_is_authoritative_for_geometry_queries() -> None:
+    model = RigidBodyAssembly("state")
+    body = model.rigid_body("body")
+    add_box(body, "shape")
+    state = model.physics_state({body: JointFrame(xyz=(2.0, 0.0, 0.0))})
+    context = TestContext(model)
+
+    with context.state(state):
+        assert context.part_world_bounds(body) == ((1.5, -0.5, -0.5), (2.5, 0.5, 0.5))
+
+    assert context.part_world_bounds(body) == ((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+
+
 def test_world_bounds_transform_large_mesh_without_runtime_warnings() -> None:
-    model = ArticulatedObject("large-mesh-transform")
-    root = model.part("root")
+    model = RigidBodyAssembly("large_mesh_transform")
+    root = model.rigid_body("root")
     sphere = SphereGeometry(1.0, width_segments=32, height_segments=16)
     assert len(sphere.vertices) >= 512
     root.add(sphere, name="sphere")
@@ -146,8 +154,8 @@ def test_world_bounds_transform_large_mesh_without_runtime_warnings() -> None:
 
 
 def test_build123d_shape_bounds_refresh_after_location_mutation() -> None:
-    model = ArticulatedObject("mutable_shape")
-    root = model.part("root")
+    model = RigidBodyAssembly("mutable_shape")
+    root = model.rigid_body("root")
     shape = Box(1.0, 1.0, 1.0)
     root.add(shape, name="body")
     ctx = TestContext(model)
@@ -159,8 +167,8 @@ def test_build123d_shape_bounds_refresh_after_location_mutation() -> None:
 
 
 def test_mesh_collision_cache_refreshes_after_geometry_mutation() -> None:
-    model = ArticulatedObject("mutable_mesh")
-    root = model.part("root")
+    model = RigidBodyAssembly("mutable_mesh")
+    root = model.rigid_body("root")
     geometry = BoxGeometry((1.0, 1.0, 1.0))
     root.add(geometry, name="body")
     context = TestContext(model)
@@ -172,8 +180,8 @@ def test_mesh_collision_cache_refreshes_after_geometry_mutation() -> None:
 
 
 def test_exact_checks_target_named_shapes() -> None:
-    model = ArticulatedObject("exact")
-    root = model.part("root")
+    model = RigidBodyAssembly("exact")
+    root = model.rigid_body("root")
     add_box(root, "outer", size=3.0)
     add_box(root, "left", size=0.5, x=-1.0)
     add_box(root, "left_copy", size=0.5, x=-1.0)
@@ -188,8 +196,8 @@ def test_exact_checks_target_named_shapes() -> None:
 
 
 def test_shape_scoped_projection_checks_have_distinct_default_names() -> None:
-    model = ArticulatedObject("named_checks")
-    root = model.part("root")
+    model = RigidBodyAssembly("named_checks")
+    root = model.rigid_body("root")
     add_box(root, "left", size=0.5, x=-1.0)
     add_box(root, "center", size=0.5, x=0.0)
     add_box(root, "right", size=0.5, x=1.0)
@@ -219,23 +227,22 @@ def test_shape_scoped_projection_checks_have_distinct_default_names() -> None:
 
 
 def test_pose_changes_prismatic_part_transform_and_restores() -> None:
-    model = ArticulatedObject("pose")
-    base = model.part("base")
+    model = RigidBodyAssembly("pose")
+    base = model.rigid_body("base")
     add_box(base, "body")
-    slider = model.part("slider")
-    add_box(slider, "body")
-    model.articulation(
+    slider = model.rigid_body("slider")
+    # Clear of the base at rest, so sliding back is what brings them together.
+    add_box(slider, "body", x=1.5)
+    model.joint(
         "slide",
-        ArticulationType.PRISMATIC,
-        base,
-        slider,
-        origin=Origin(xyz=(2.0, 0.0, 0.0)),
-        axis=(1.0, 0.0, 0.0),
-        motion_limits=MotionLimits(lower=-1.5, upper=0.0),
+        base.at(JointFrame()),
+        slider.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.TRANS_X, limits=(-1.5, 0.0)),),
     )
     ctx = TestContext(model)
 
     rest = ctx.part_world_position("slider")
+    assert not ctx.expect_collision("base", "slider", shape_a="body", shape_b="body")
     with ctx.pose({"slide": -1.25}):
         posed = ctx.part_world_position("slider")
         assert ctx.expect_collision("base", "slider", shape_a="body", shape_b="body")
@@ -243,23 +250,53 @@ def test_pose_changes_prismatic_part_transform_and_restores() -> None:
     assert posed[0] < rest[0]
 
 
-def test_pose_rejects_an_unknown_articulation() -> None:
-    model = ArticulatedObject("pose")
-    base = model.part("base")
+def test_pose_rejects_an_unknown_joint_position() -> None:
+    model = RigidBodyAssembly("pose")
+    base = model.rigid_body("base")
     add_box(base, "body")
     with (
-        pytest.raises(ValidationError, match="unknown articulation"),
+        pytest.raises(ValidationError, match="unknown joint position"),
         TestContext(model).pose(missing=1.0),
     ):
         pass
 
 
+def test_pose_accepts_qualified_d6_coordinates() -> None:
+    model = RigidBodyAssembly("d6_pose")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    moving = model.rigid_body("moving")
+    add_box(moving, "body")
+    model.joint(
+        "motion",
+        base.at(),
+        moving.at(),
+        dofs=(
+            JointDOF(JointAxis.TRANS_X, limits=(-0.5, 0.5)),
+            JointDOF(JointAxis.ROT_Z, limits=(-0.5, 0.5)),
+        ),
+    )
+    model.articulation("main", root=base)
+    context = TestContext(model)
+
+    with context.pose({"motion.transX": 0.2, "motion.rotZ": 0.1}):
+        assert context.part_world_position(moving)[0] == pytest.approx(0.2)
+
+    # A multi-DOF joint has no single value; the error must teach the
+    # qualified spelling.
+    with (
+        pytest.raises(ValidationError, match=r"motion\.rotZ"),
+        context.pose({"motion": 0.2}),
+    ):
+        pass
+
+
 def test_scoped_allowance_does_not_hide_another_shape_pair() -> None:
-    model = ArticulatedObject("allowance")
-    parent = model.part("parent")
+    model = RigidBodyAssembly("allowance")
+    parent = model.rigid_body("parent")
     add_box(parent, "allowed_parent", x=-1.0)
     add_box(parent, "blocked_parent", x=1.0)
-    child = model.part("child")
+    child = model.rigid_body("child")
     add_box(child, "allowed_child", x=-1.0)
     add_box(child, "blocked_child", x=1.0)
     fixed(model, "mount", parent, child)
@@ -279,11 +316,11 @@ def test_scoped_allowance_does_not_hide_another_shape_pair() -> None:
 
 
 def test_adjacent_contact_and_tiny_penetration_pass_physical_thresholds() -> None:
-    for offset in (1.0, 0.996):
-        model = ArticulatedObject(f"contact_{offset}")
-        parent = model.part("parent")
+    for index, offset in enumerate((1.0, 0.996)):
+        model = RigidBodyAssembly(f"contact_{index}")
+        parent = model.rigid_body("parent")
         add_box(parent, "body")
-        child = model.part("child")
+        child = model.rigid_body("child")
         add_box(child, "body")
         fixed(model, "mount", parent, child, xyz=(0.0, 0.0, offset))
 
@@ -291,10 +328,10 @@ def test_adjacent_contact_and_tiny_penetration_pass_physical_thresholds() -> Non
 
 
 def test_coplanar_contact_with_large_watertight_bounds_passes() -> None:
-    model = ArticulatedObject("watertight_contact")
-    parent = model.part("parent")
+    model = RigidBodyAssembly("watertight_contact")
+    parent = model.rigid_body("parent")
     parent.add(Box(1, 1, 1) + Pos(X=2, Z=2) * Box(1, 1, 1), name="body")
-    child = model.part("child")
+    child = model.rigid_body("child")
     child.add(Pos(Z=1) * Box(1, 1, 1), name="body")
     fixed(model, "mount", parent, child)
 
@@ -302,8 +339,8 @@ def test_coplanar_contact_with_large_watertight_bounds_passes() -> None:
 
 
 def test_coplanar_contact_with_large_open_mesh_bounds_passes() -> None:
-    model = ArticulatedObject("open_mesh_contact")
-    parent = model.part("parent")
+    model = RigidBodyAssembly("open_mesh_contact")
+    parent = model.rigid_body("parent")
     parent.add(
         MeshGeometry(
             vertices=[
@@ -319,7 +356,7 @@ def test_coplanar_contact_with_large_open_mesh_bounds_passes() -> None:
         ),
         name="body",
     )
-    child = model.part("child")
+    child = model.rigid_body("child")
     child.add(Pos(Z=1) * Box(1, 1, 1), name="body")
     fixed(model, "mount", parent, child)
 
@@ -327,10 +364,10 @@ def test_coplanar_contact_with_large_open_mesh_bounds_passes() -> None:
 
 
 def test_adjacent_large_penetration_blocks() -> None:
-    model = ArticulatedObject("penetration")
-    parent = model.part("parent")
+    model = RigidBodyAssembly("penetration")
+    parent = model.rigid_body("parent")
     add_box(parent, "body")
-    child = model.part("child")
+    child = model.rigid_body("child")
     add_box(child, "body")
     fixed(model, "mount", parent, child, xyz=(0.0, 0.0, 0.98))
 
@@ -340,10 +377,10 @@ def test_adjacent_large_penetration_blocks() -> None:
 
 
 def test_physical_isolation_ignores_the_articulation_graph() -> None:
-    model = ArticulatedObject("isolated")
-    base = model.part("base")
+    model = RigidBodyAssembly("isolated")
+    base = model.rigid_body("base")
     add_box(base, "body")
-    floating = model.part("floating")
+    floating = model.rigid_body("floating")
     add_box(floating, "body")
     fixed(model, "mount", base, floating, xyz=(3.0, 0.0, 0.0))
 
@@ -353,12 +390,12 @@ def test_physical_isolation_ignores_the_articulation_graph() -> None:
 
 
 def test_an_entire_floating_group_must_be_allowed() -> None:
-    model = ArticulatedObject("floating_group")
-    base = model.part("base")
+    model = RigidBodyAssembly("floating_group")
+    base = model.rigid_body("base")
     add_box(base, "body")
-    first = model.part("first")
+    first = model.rigid_body("first")
     add_box(first, "body")
-    second = model.part("second")
+    second = model.rigid_body("second")
     add_box(second, "body")
     fixed(model, "base_to_first", base, first, xyz=(3.0, 0.0, 0.0))
     fixed(model, "first_to_second", first, second, xyz=(1.0, 0.0, 0.0))
@@ -376,8 +413,8 @@ def test_an_entire_floating_group_must_be_allowed() -> None:
 
 
 def test_disconnected_geometry_warns_by_default_and_can_be_authored_as_blocking() -> None:
-    model = ArticulatedObject("disconnected")
-    base = model.part("base")
+    model = RigidBodyAssembly("disconnected")
+    base = model.rigid_body("base")
     add_box(base, "left", x=-1.0)
     add_box(base, "right", x=1.0)
 
@@ -393,10 +430,10 @@ def test_disconnected_geometry_warns_by_default_and_can_be_authored_as_blocking(
 
 
 def test_failing_checks_record_machine_readable_kinds() -> None:
-    model = ArticulatedObject("kinds")
-    base = model.part("base")
+    model = RigidBodyAssembly("kinds")
+    base = model.rigid_body("base")
     add_box(base, "body")
-    lid = model.part("lid")
+    lid = model.rigid_body("lid")
     add_box(lid, "body")
     fixed(model, "mount", base, lid, xyz=(0.0, 0.0, 0.98))
 
@@ -413,10 +450,10 @@ def test_failing_checks_record_machine_readable_kinds() -> None:
 
 
 def test_contact_and_isolation_checks_record_kinds() -> None:
-    model = ArticulatedObject("gap_kinds")
-    base = model.part("base")
+    model = RigidBodyAssembly("gap_kinds")
+    base = model.rigid_body("base")
     add_box(base, "body")
-    floating = model.part("floating")
+    floating = model.rigid_body("floating")
     add_box(floating, "body")
     fixed(model, "mount", base, floating, xyz=(3.0, 0.0, 0.0))
 
@@ -430,19 +467,9 @@ def test_contact_and_isolation_checks_record_kinds() -> None:
     ]
 
 
-def test_single_root_check_records_kind() -> None:
-    model = ArticulatedObject("two_roots")
-    add_box(model.part("a"), "body")
-    add_box(model.part("b"), "body")
-
-    ctx = TestContext(model)
-    assert not ctx.check_single_root_part()
-    assert ctx.report().failures[0].kind is FailureKind.SINGLE_ROOT
-
-
 def test_nested_solid_shapes_are_connected_geometry() -> None:
-    model = ArticulatedObject("nested")
-    base = model.part("base")
+    model = RigidBodyAssembly("nested")
+    base = model.rigid_body("base")
     add_box(base, "outer", size=2.0)
     add_box(base, "insert", size=0.5)
     ctx = TestContext(model)
@@ -452,8 +479,8 @@ def test_nested_solid_shapes_are_connected_geometry() -> None:
 
 
 def test_absurd_dimensions_and_scale_outliers_are_warnings() -> None:
-    model = ArticulatedObject("scale")
-    base = model.part("base")
+    model = RigidBodyAssembly("scale")
+    base = model.rigid_body("base")
     add_box(base, "normal", size=1.0)
     add_box(base, "absurd", size=2001.0, x=3000.0)
     ctx = TestContext(model)
@@ -462,8 +489,8 @@ def test_absurd_dimensions_and_scale_outliers_are_warnings() -> None:
     assert ctx.report().passed
     assert "absurd dimension" in ctx.report().warnings[0]
 
-    relative = ArticulatedObject("relative_scale")
-    detailed = relative.part("body")
+    relative = RigidBodyAssembly("relative_scale")
+    detailed = relative.rigid_body("body")
     add_box(detailed, "detail_a", size=0.001, x=-1.0)
     add_box(detailed, "detail_b", size=0.001, x=1.0)
     add_box(detailed, "body", size=0.2)
@@ -471,3 +498,110 @@ def test_absurd_dimensions_and_scale_outliers_are_warnings() -> None:
 
     assert relative_ctx.warn_if_absurd_dimensions()
     assert "extreme scale outlier" in relative_ctx.report().warnings[0]
+
+
+def _swing_arm() -> RigidBodyAssembly:
+    model = RigidBodyAssembly("swing_arm")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    arm = model.rigid_body("arm")
+    add_box(arm, "body", x=3.0)
+    model.joint(
+        "hinge",
+        base.at(),
+        arm.at(),
+        dofs=(JointDOF(JointAxis.ROT_Z, limits=(-1.0, 1.0)),),
+    )
+    model.articulation("main", root=base, joints=["hinge"])
+    return model
+
+
+def test_failed_pose_leaves_an_enclosing_state_intact() -> None:
+    model = RigidBodyAssembly("state_guard")
+    body = model.rigid_body("body")
+    add_box(body, "shape")
+    moved = model.physics_state({body: JointFrame(xyz=(2.0, 0.0, 0.0))})
+    context = TestContext(model)
+
+    with context.state(moved):
+        with (
+            pytest.raises(ValidationError, match="unknown joint position"),
+            context.pose(bogus=1.0),
+        ):
+            pass
+        assert context.part_world_position("body")[0] == pytest.approx(2.0)
+
+
+def test_nested_pose_spellings_share_one_coordinate() -> None:
+    """ "hinge" and "hinge.rotZ" are the same DOF; the innermost value wins."""
+
+    import math as _math
+
+    context = TestContext(_swing_arm())
+
+    with context.pose(hinge=0.3), context.pose({"hinge.rotZ": 0.5}), context.pose(hinge=0.7):
+        tip = context.part_world_point("arm", (3.0, 0.0, 0.0))
+        assert tip[0] == pytest.approx(3.0 * _math.cos(0.7))
+
+
+def test_pose_rejects_out_of_limit_values_at_entry() -> None:
+    context = TestContext(_swing_arm())
+
+    with pytest.raises(ValidationError, match="outside limits"), context.pose(hinge=5.0):
+        pass
+
+
+def test_pose_sweeps_record_unreachable_loop_poses() -> None:
+    """A sweep past a ring's reachable range is a recorded failure, not a crash."""
+
+    model = _swing_arm()
+    base = model.get_rigid_body("base")
+    arm = model.get_rigid_body("arm")
+    model.joint(
+        "second_pin",
+        base.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        arm.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        dofs=(JointDOF(JointAxis.ROT_Z),),
+    )
+    context = TestContext(model)
+
+    poses = context.sample_joint("hinge")
+    assert not context.expect_no_collision_at_poses("base", "arm", poses=poses)
+
+    failures = context.report().failures
+    assert failures and "unreachable" in failures[0].details
+
+
+def test_separation_check_handles_multi_dof_joints() -> None:
+    model = RigidBodyAssembly("multi_dof_baseline")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    moving = model.rigid_body("moving")
+    add_box(moving, "body")
+    model.joint(
+        "wrist",
+        base.at(),
+        moving.at(),
+        dofs=(
+            JointDOF(JointAxis.ROT_X, limits=(-0.4, 0.4)),
+            JointDOF(JointAxis.ROT_Y, limits=(-0.4, 0.4)),
+        ),
+    )
+    model.articulation("main", root=base, joints=["wrist"])
+    context = TestContext(model)
+
+    assert context.fail_if_articulation_separates_child()
+
+
+def test_open_mesh_buried_in_a_solid_reads_as_collision() -> None:
+    model = RigidBodyAssembly("buried")
+    outer = model.rigid_body("outer")
+    add_box(outer, "solid")
+    inner = model.rigid_body("inner")
+    sheet = BoxGeometry((0.2, 0.2, 0.2))
+    inner.add(MeshGeometry(sheet.vertices, sheet.faces[:-1]), name="open_sheet")
+    fixed(model, "mount", outer, inner)
+    context = TestContext(model)
+
+    assert context.expect_collision("outer", "inner")
+    assert not context.expect_no_collision("outer", "inner")
