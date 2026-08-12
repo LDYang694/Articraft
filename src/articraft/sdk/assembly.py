@@ -798,9 +798,6 @@ def _solve_closed_loops(
                     seen.add(dof_id)
                     candidates.append((joint, dof))
 
-    if not candidates:
-        return positions
-
     locked = {
         closure: tuple(axis for axis in JointAxis if axis not in {dof.axis for dof in closure.dofs})
         for closure in active_closures
@@ -845,7 +842,11 @@ def _solve_closed_loops(
         return np.asarray(rows, dtype=np.float64)
 
     values = np.zeros(len(candidates), dtype=np.float64)
-    for step in range(1, _LOOP_STEPS + 1):
+    # With no unknowns left -- every ring coordinate supplied by the caller --
+    # there is nothing to iterate, but the closure residual still decides
+    # whether the supplied pose keeps the loop assembled.
+    steps = _LOOP_STEPS if candidates else 0
+    for step in range(1, steps + 1):
         scale = step / _LOOP_STEPS
         damping = 1e-6
         for _ in range(40):
@@ -897,6 +898,12 @@ def _solve_closed_loops(
                 f"pose leaves loop closure {names} open (constraint residual {worst:.3g}) "
                 f"with solved joint positions pinned at their limits: {pinned!r}; "
                 "widen those limits if the mechanism should reach this pose"
+            )
+        if not candidates:
+            raise LoopClosureError(
+                f"pose leaves loop closure {names} open (constraint residual {worst:.3g}); "
+                "every ring coordinate was supplied -- adjust them so the loop closes, "
+                "or leave one unspecified for the solver to derive"
             )
         raise LoopClosureError(
             f"pose leaves loop closure {names} open (constraint residual {worst:.3g}); "

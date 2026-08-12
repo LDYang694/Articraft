@@ -208,3 +208,18 @@ def test_limited_slide_solves_inside_its_limits() -> None:
 def test_pose_stopped_by_a_limit_names_the_pinned_joint() -> None:
     with pytest.raises(LoopClosureError, match=r"pinned at their limits.*slide\.transX"):
         _tight_ram().resolve().forward_kinematics({"arm_pin.rotY": 0.5})
+
+
+def test_fully_supplied_ring_that_stays_open_raises_a_loop_error() -> None:
+    """Supplying every ring coordinate leaves no unknowns, not no contract."""
+
+    resolved = four_bar().resolve()
+
+    with pytest.raises(LoopClosureError, match="every ring coordinate was supplied"):
+        resolved.forward_kinematics(
+            {
+                "crank_pin.rotY": 0.4,
+                "coupler_pin.rotY": 0.0,
+                "rocker_pin.rotY": 0.0,
+            }
+        )
