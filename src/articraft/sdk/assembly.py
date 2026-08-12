@@ -883,8 +883,8 @@ def _joint_path(
         return None
     path: list[Joint] = []
     node = end
-    while previous[node] is not None:
-        node, joint = previous[node]
+    while (step := previous[node]) is not None:
+        node, joint = step
         path.append(joint)
     path.reverse()
     return tuple(path)

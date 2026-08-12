@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import numpy as np
 import pytest
 from build123d import Box
 
 from articraft.sdk.assembly import JointAxis, JointDOF, JointFrame, RigidBodyAssembly
+from articraft.sdk.bodies import RigidBody
 from articraft.sdk.errors import LoopClosureError
 
 GROUND_A = (-0.2, 0.0, 0.1)
@@ -74,8 +76,8 @@ def closure_gap(assembly: RigidBodyAssembly, positions: dict[str, float]) -> flo
     resolved = assembly.resolve()
     state = resolved.forward_kinematics(positions)
     closure = resolved.get_joint("closing_pin").joint
-    point0 = state.matrix(closure.body0) @ np.array([*closure.frame0.xyz, 1.0])
-    point1 = state.matrix(closure.body1) @ np.array([*closure.frame1.xyz, 1.0])
+    point0 = state.matrix(cast(RigidBody, closure.body0)) @ np.array([*closure.frame0.xyz, 1.0])
+    point1 = state.matrix(cast(RigidBody, closure.body1)) @ np.array([*closure.frame1.xyz, 1.0])
     return float(np.linalg.norm(point0[:3] - point1[:3]))
 
 
