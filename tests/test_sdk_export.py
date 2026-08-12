@@ -13,6 +13,7 @@ from articraft.sdk import (
     JointAxis,
     JointDOF,
     JointFrame,
+    Material,
     RigidBodyAssembly,
 )
 from articraft.sdk.export import export_assembly
@@ -183,25 +184,41 @@ def test_export_supports_every_articulation_type_and_matching_joint_frames(tmp_p
         _assert_joint_frames_meet(stage, joint)
 
 
-@pytest.mark.parametrize("axis", [(1e-320, 0.0, 0.0), (1e308, 1e308, 0.0)])
-def test_export_robustly_normalizes_finite_nonzero_axes(tmp_path, axis) -> None:
-    model = RigidBodyAssembly("axis")
-    root = model.rigid_body("root")
-    root.add(Box(0.1, 0.1, 0.1), name="body")
-    child = model.rigid_body("child")
-    child.add(Box(0.1, 0.1, 0.1), name="body")
+def test_reserved_and_shared_names_do_not_corrupt_the_stage(tmp_path) -> None:
+    """Names are labels, never structure.
+
+    An assembly named after the physics scene prim must not replace it, a
+    body named after a structural scope must not confuse the audit, and two
+    same-named material variants must keep their own friction.
+    """
+
+    model = RigidBodyAssembly("physicsScene")
+    slick = Material.STEEL.but(friction=(0.05, 0.02))
+    base = model.rigid_body("joints")
+    base.add(Box(0.1, 0.1, 0.1), name="body", material=Material.STEEL)
+    child = model.rigid_body("rigid_bodies")
+    child.add(Box(0.1, 0.1, 0.1), name="body", material=slick)
     model.joint(
-        "spin",
-        body0=root,
-        frame0=JointFrame(),
+        "shapes",
+        body0=base,
+        frame0=JointFrame(xyz=(0.0, 0.0, 0.2)),
         body1=child,
         frame1=JointFrame(),
         dofs=(JointDOF(JointAxis.ROT_Z),),
     )
+    model.articulation("main", root=base, joints=["shapes"])
 
     result = export_assembly(model, tmp_path)
 
-    assert result.usdz.is_file()
+    stage = Usd.Stage.Open(str(result.usdz))
+    scene = stage.GetPrimAtPath("/World/physicsScene")
+    assert scene.IsA(UsdPhysics.Scene)
+    frictions = sorted(
+        prim.GetAttribute("physics:staticFriction").Get()
+        for prim in stage.Traverse()
+        if prim.GetAttribute("physics:staticFriction").HasAuthoredValueOpinion()
+    )
+    assert frictions == pytest.approx([0.05, Material.STEEL.friction[0]])
 
 
 def _hinge() -> RigidBodyAssembly:

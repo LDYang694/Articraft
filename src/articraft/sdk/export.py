@@ -193,7 +193,14 @@ def _write_assembly_usdz(
         world = UsdGeom.Xform.Define(stage, "/World")
         stage.SetDefaultPrim(world.GetPrim())
         _write_scene(stage, "/World/physicsScene", resolved.scene)
-        assembly_path = f"/World/{_safe_name(resolved.name)}"
+        # The scene owns /World/physicsScene; an assembly named the same way
+        # would silently re-type that prim and ship a stage with no physics
+        # scene at all. Step aside instead -- the authored name still travels
+        # on the articraft:name attribute and in the manifest.
+        assembly_name = _safe_name(resolved.name)
+        while stage.GetPrimAtPath(f"/World/{assembly_name}"):
+            assembly_name = f"{assembly_name}_assembly"
+        assembly_path = f"/World/{assembly_name}"
         assembly_prim = UsdGeom.Xform.Define(stage, assembly_path).GetPrim()
         Usd.ModelAPI(assembly_prim).SetKind(Kind.Tokens.assembly)
         _attrs(assembly_prim, {"name": resolved.name, "units": "meters", "schemaVersion": 2})
@@ -255,6 +262,9 @@ def _write_body_geometry(
     # named appearance can be attached across shapes and parts.
     appearances_path = f"{scope_path.rsplit('/', 1)[0]}/appearances"
     shared_appearances: dict[Material, str] = {}
+    # Keyed by Material value, not name: STEEL and STEEL.but(friction=...)
+    # share a name but are different substances, and must not share friction.
+    shared_physics: dict[Material, str] = {}
     requested_shapes = 0
     textured_shapes = 0
 
@@ -275,7 +285,9 @@ def _write_body_geometry(
         materials_path = f"{part_path}/materials"
         shape_entries = list(part._iter_shapes())
         safe_shape_names = _safe_name_map(shape.name for shape in shape_entries)
-        if textured or any(shape.display_material is not None for shape in shape_entries):
+        # Only textured shapes write per-part materials; untextured display
+        # materials live in the shared /appearances scope.
+        if textured and any(shape.display_material is not None for shape in shape_entries):
             UsdGeom.Scope.Define(stage, materials_path)
         for shape in shape_entries:
             safe_shape = safe_shape_names[shape.name]
@@ -303,6 +315,7 @@ def _write_body_geometry(
                     UsdGeom.Mesh.Get(stage, mesh_path),  # pyright: ignore[reportAttributeAccessIssue]
                     shape.surface_material,
                     physics_materials_path,
+                    shared_physics,
                 )
                 textured_shapes += 1
                 continue
@@ -324,7 +337,9 @@ def _write_body_geometry(
             mesh.CreateOrientationAttr(UsdGeom.Tokens.rightHanded)
             _attrs(mesh.GetPrim(), {"name": shape.name, **_substance_attrs(shape)})
             _write_collision(mesh, trimesh_obj)
-            _write_physics_material(stage, mesh, shape.surface_material, physics_materials_path)
+            _write_physics_material(
+                stage, mesh, shape.surface_material, physics_materials_path, shared_physics
+            )
             if display is not None:
                 # displayColor stays as a fallback for renderers that ignore
                 # UsdShade; the bound UsdPreviewSurface carries the full surface.
@@ -385,7 +400,7 @@ def _write_textured_shape(
     mesh.CreateDisplayColorAttr([Gf.Vec3f(*tint)])
     mesh.CreateDisplayOpacityAttr([material.opacity])
     _bind_textured_material(stage, mesh, material_path, texture_set, material, asset_dir)
-    _attrs(mesh.GetPrim(), {"name": shape.name})
+    _attrs(mesh.GetPrim(), {"name": shape.name, **_substance_attrs(shape)})
     # The viewer keeps USDLoader's texture maps and layers the authored tint +
     # metalness on top (see viewer.html); these attrs carry that intent.
     _attrs(
@@ -634,6 +649,7 @@ def _write_physics_material(
     mesh: UsdGeom.Mesh,
     material: Material | None,
     scope_path: str,
+    shared: dict[Material, str],
 ) -> None:
     """Bind how this collider behaves on contact, from what the shape is made of.
 
@@ -647,10 +663,18 @@ def _write_physics_material(
         # No friction authored means we do not know it; the engine's default is
         # a better answer than a number we invented.
         return
-    path = f"{scope_path}/{_safe_name(material.name)}"
-    usd_material = UsdShade.Material.Get(stage, path)
-    if not usd_material:
+    path = shared.get(material)
+    if path is None:
         UsdGeom.Scope.Define(stage, scope_path)
+        # Prim names come from the material name, but identity comes from the
+        # material value: same-named variants get numbered siblings instead
+        # of silently inheriting the first variant's friction.
+        base = _safe_name(material.name)
+        path = f"{scope_path}/{base}"
+        serial = 1
+        while stage.GetPrimAtPath(path):
+            serial += 1
+            path = f"{scope_path}/{base}_{serial}"
         usd_material = UsdShade.Material.Define(stage, path)
         physics = UsdPhysics.MaterialAPI.Apply(usd_material.GetPrim())  # pyright: ignore[reportAttributeAccessIssue]
         static, dynamic = material.friction
@@ -658,8 +682,9 @@ def _write_physics_material(
         physics.CreateDynamicFrictionAttr(dynamic)
         if material.restitution is not None:
             physics.CreateRestitutionAttr(material.restitution)
+        shared[material] = path
     UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(
-        usd_material,
+        UsdShade.Material.Get(stage, path),
         bindingStrength=UsdShade.Tokens.weakerThanDescendants,
         materialPurpose="physics",
     )
@@ -1075,12 +1100,16 @@ def _audit_assembly_usdz(
     cache = UsdGeom.XformCache(  # pyright: ignore[reportAttributeAccessIssue]
         Usd.TimeCode.Default()  # pyright: ignore[reportAttributeAccessIssue]
     )
+    # Classify by where a prim sits in the stage, not by substrings of its
+    # path: a body or assembly whose *name* is "joints" or "rigid_bodies"
+    # must not change what its prims are taken to be.
+    bodies_scope = assembly_prims[0].GetPath().AppendChild("rigid_bodies")
+    joints_scope = assembly_prims[0].GetPath().AppendChild("joints")
     for prim in stage.Traverse():
-        path_text = str(prim.GetPath())
         authored_name = _custom_string(prim, "name")
-        if "/rigid_bodies/" in path_text and "/shapes/" not in path_text and authored_name:
+        if prim.GetPath().GetParentPath() == bodies_scope and authored_name:
             body_prims[authored_name] = prim
-        if "/joints/" in path_text and authored_name:
+        if prim.GetPath().GetParentPath() == joints_scope and authored_name:
             joint_prims[authored_name] = prim
         if not prim.IsA(UsdGeom.Mesh):
             continue
@@ -1226,33 +1255,6 @@ def _expect_vector_attr(
             f"USDZ audit joint {name} mismatch for {joint_name!r}: "
             f"expected={expected!r} found={value!r}"
         )
-
-
-def _expect_number_attr(
-    prim: Usd.Prim,
-    name: str,
-    expected: float,
-    *,
-    joint_name: str,
-) -> None:
-    value = prim.GetAttribute(f"articraft:{name}").Get()
-    if value is None or not math.isclose(float(value), expected, rel_tol=0.0, abs_tol=1e-9):
-        raise RuntimeError(
-            f"USDZ audit joint {name} mismatch for {joint_name!r}: "
-            f"expected={expected!r} found={value!r}"
-        )
-
-
-def _signed_volume(mesh) -> float:
-    triangles = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(mesh.faces)]
-    return float(
-        np.einsum(
-            "ij,ij->i",
-            triangles[:, 0],
-            np.cross(triangles[:, 1], triangles[:, 2]),
-        ).sum()
-        / 6.0
-    )
 
 
 def _point_bounds(
