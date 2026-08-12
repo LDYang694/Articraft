@@ -681,10 +681,17 @@ def _build_spec(usdz: Path) -> Any:
         equality.name2 = joint.child
         equality.solref = [0.004, 1.0]
         equality.solimp = [0.99, 0.999, 0.0001, 0.5, 2.0]
+        # A fresh equality's data starts at the defaults of a *joint* coupling,
+        # not at zero; anything left over reads as an authored anchor or
+        # relative pose. Start from the clean slate the MJCF parser produces:
+        # zeros, with torquescale at its default of one.
+        equality.data[:] = 0.0
+        equality.data[10] = 1.0
         if joint.kind is None:
-            # A weld with no authored relpose holds the compiled rest pose.
+            # A weld whose relpose quaternion is all zero holds the relative
+            # pose the bodies compile at, which is the honest reading of a
+            # rigidly braced pair.
             equality.type = mujoco.mjtEq.mjEQ_WELD  # pyright: ignore[reportAttributeAccessIssue]
-            equality.data[10] = 1.0  # torquescale, the MJCF default
         else:
             # A hinge pin holds a shared point; the connect constraint is
             # exactly that, anchored on the parent side of the pin.

@@ -424,6 +424,47 @@ def test_a_revolute_loop_is_preserved_as_a_mujoco_constraint(tmp_path: Path) -> 
     assert constraint.get("name") == "closing_hinge"
 
 
+def test_a_fixed_loop_welds_at_the_rest_pose(tmp_path: Path) -> None:
+    """A fixed loop closure must hold the pair exactly where it compiled.
+
+    A fresh MjSpec equality starts with joint-coupling defaults in its data,
+    and anything left there reads as an authored relative pose -- the weld
+    then pulls toward a phantom offset instead of the rest pose. The tree
+    joint masks most of the resulting motion, so the compiled constraint is
+    what has to be checked: with both body frames coincident at rest, the
+    relpose must be the identity.
+    """
+
+    import numpy as np
+
+    model = RigidBodyAssembly("welded_ring")
+    a = model.rigid_body("a")
+    a.add(BoxGeometry((0.1, 0.1, 0.02)), name="slab", material=Material.STEEL)
+    b = model.rigid_body("b")
+    b.add(
+        BoxGeometry((0.1, 0.1, 0.02)).translate(0.0, 0.0, 0.03),
+        name="plate",
+        material=Material.STEEL,
+    )
+    tree = model.joint("pin", a.at(), b.at(), dofs=(JointDOF(JointAxis.ROT_Z),))
+    model.joint("brace", a.at(), b.at(), dofs=())
+    model.articulation("main", root=a, joints=(tree,))
+
+    path = write_mjcf(_export(model, tmp_path), tmp_path / "sim")
+    compiled = mujoco.MjModel.from_xml_path(str(path))
+
+    welds = [
+        index for index in range(compiled.neq) if compiled.eq_type[index] == mujoco.mjtEq.mjEQ_WELD
+    ]
+    assert len(welds) == 1
+    data = compiled.eq_data[welds[0]]
+    assert np.allclose(data[:6], 0.0, atol=1e-9), data  # anchor and relpose offset
+    assert np.allclose(data[6:10], (1.0, 0.0, 0.0, 0.0), atol=1e-9), data  # identity relpose
+
+    result = simulate_usdz(_export(model, tmp_path / "run"), tmp_path / "run" / "sim", seconds=1.0)
+    assert result.stood_up, result.summary()
+
+
 def test_an_unsupported_loop_fails_before_writing_partial_mjcf(tmp_path: Path) -> None:
     model = RigidBodyAssembly("parallel_slides")
     base = model.rigid_body("base")
