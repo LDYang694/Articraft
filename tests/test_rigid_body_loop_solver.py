@@ -43,31 +43,26 @@ def four_bar() -> RigidBodyAssembly:
     hinge = (JointDOF(JointAxis.ROT_Y, limits=(-math.pi, math.pi)),)
     crank_pin = assembly.joint(
         "crank_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=GROUND_A),
-        body1=crank,
+        ground.at(JointFrame(xyz=GROUND_A)),
+        crank.at(),
         dofs=hinge,
     )
     coupler_pin = assembly.joint(
         "coupler_pin",
-        body0=crank,
-        frame0=JointFrame(xyz=(CRANK, 0.0, 0.0), rpy=(0.0, COUPLER_TILT, 0.0)),
-        body1=coupler,
+        crank.at(JointFrame(xyz=(CRANK, 0.0, 0.0), rpy=(0.0, COUPLER_TILT, 0.0))),
+        coupler.at(),
         dofs=hinge,
     )
     rocker_pin = assembly.joint(
         "rocker_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=GROUND_D, rpy=(0.0, -math.pi / 2.0, 0.0)),
-        body1=rocker,
+        ground.at(JointFrame(xyz=GROUND_D, rpy=(0.0, -math.pi / 2.0, 0.0))),
+        rocker.at(),
         dofs=hinge,
     )
     assembly.joint(
         "closing_pin",
-        body0=coupler,
-        frame0=JointFrame(xyz=(COUPLER, 0.0, 0.0)),
-        body1=rocker,
-        frame1=JointFrame(xyz=(ROCKER, 0.0, 0.0)),
+        coupler.at(JointFrame(xyz=(COUPLER, 0.0, 0.0))),
+        rocker.at(JointFrame(xyz=(ROCKER, 0.0, 0.0))),
         dofs=hinge,
     )
     assembly.articulation(
@@ -156,49 +151,58 @@ def test_complete_pose_state_validates_past_a_quarter_turn() -> None:
     assert checked.dof_positions["crank_pin.rotY"] == pytest.approx(1.7)
 
 
-def _tight_ram() -> RigidBodyAssembly:
-    assembly = RigidBodyAssembly("tight_ram")
+def _hydraulic_ram(slide_limits: tuple[float, float]) -> RigidBodyAssembly:
+    assembly = RigidBodyAssembly("hydraulic_linkage")
     ground = assembly.rigid_body("ground")
     arm = assembly.rigid_body("arm")
     barrel = assembly.rigid_body("barrel")
     rod = assembly.rigid_body("rod")
     for body in (ground, arm, barrel, rod):
         body.add(Box(0.1, 0.1, 0.1), name="body")
+
     arm_length = 1.0
     barrel_pivot = (0.2, 0.0, -0.4)
     ram_length = math.dist(barrel_pivot, (arm_length, 0.0, 0.0))
     ram_pitch = -math.atan2(0.4, 0.8)
     hinge = (JointDOF(JointAxis.ROT_Y, limits=(-1.0, 1.0)),)
-    arm_pin = assembly.joint("arm_pin", body0=ground, body1=arm, dofs=hinge)
+    arm_pin = assembly.joint("arm_pin", ground.at(), arm.at(), dofs=hinge)
     barrel_pin = assembly.joint(
         "barrel_pin",
-        body0=ground,
-        frame0=JointFrame(xyz=barrel_pivot, rpy=(0.0, ram_pitch, 0.0)),
-        body1=barrel,
+        ground.at(JointFrame(xyz=barrel_pivot, rpy=(0.0, ram_pitch, 0.0))),
+        barrel.at(),
         dofs=hinge,
     )
     slide = assembly.joint(
         "slide",
-        body0=barrel,
-        body1=rod,
-        dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.02, 0.02)),),
+        barrel.at(),
+        rod.at(),
+        dofs=(JointDOF(JointAxis.TRANS_X, limits=slide_limits),),
     )
     assembly.joint(
         "rod_eye",
-        body0=rod,
-        frame0=JointFrame(xyz=(ram_length, 0.0, 0.0)),
-        body1=arm,
-        frame1=JointFrame(xyz=(arm_length, 0.0, 0.0)),
+        rod.at(JointFrame(xyz=(ram_length, 0.0, 0.0))),
+        arm.at(JointFrame(xyz=(arm_length, 0.0, 0.0))),
         dofs=hinge,
     )
     assembly.articulation("main", root=ground, joints=(arm_pin, barrel_pin, slide))
     return assembly
 
 
+def test_prismatic_coordinate_follows_a_closed_loop() -> None:
+    """A hydraulic ram is a physical ring; it needs no separate drive API."""
+
+    state = _hydraulic_ram((-0.5, 0.5)).resolve().forward_kinematics({"arm_pin.rotY": 0.25})
+
+    assert abs(state.dof_positions["barrel_pin.rotY"]) > 0.01
+    assert abs(state.dof_positions["slide.transX"]) > 0.01
+
+
 def test_limited_slide_solves_inside_its_limits() -> None:
     """A limit is a wall at the boundary, not a trap for the solver inside it."""
 
-    state = _tight_ram().resolve().forward_kinematics({"arm_pin.rotY": 0.02})
+    resolved = _hydraulic_ram((-0.02, 0.02)).resolve()
+
+    state = resolved.forward_kinematics({"arm_pin.rotY": 0.02})
 
     slide = state.dof_positions["slide.transX"]
     assert -0.02 <= slide <= 0.02
@@ -207,7 +211,7 @@ def test_limited_slide_solves_inside_its_limits() -> None:
 
 def test_pose_stopped_by_a_limit_names_the_pinned_joint() -> None:
     with pytest.raises(LoopClosureError, match=r"pinned at their limits.*slide\.transX"):
-        _tight_ram().resolve().forward_kinematics({"arm_pin.rotY": 0.5})
+        _hydraulic_ram((-0.02, 0.02)).resolve().forward_kinematics({"arm_pin.rotY": 0.5})
 
 
 def test_fully_supplied_ring_that_stays_open_raises_a_loop_error() -> None:

@@ -31,34 +31,30 @@ def four_bar(*, second_closure: bool = False) -> RigidBodyAssembly:
     coupler = body(assembly, "coupler")
     rocker = body(assembly, "rocker")
     dofs = (JointDOF(JointAxis.ROT_Z),)
-    a = assembly.joint("ground_crank", body0=ground, body1=crank, dofs=dofs)
+    a = assembly.joint("ground_crank", ground.at(), crank.at(), dofs=dofs)
     b = assembly.joint(
         "crank_coupler",
-        body0=crank,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=coupler,
+        crank.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        coupler.at(),
         dofs=dofs,
     )
     c = assembly.joint(
         "coupler_rocker",
-        body0=coupler,
-        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
-        body1=rocker,
+        coupler.at(JointFrame(xyz=(1.0, 0.0, 0.0))),
+        rocker.at(),
         dofs=dofs,
     )
     assembly.joint(
         "rocker_ground",
-        body0=rocker,
-        body1=ground,
-        frame1=JointFrame(xyz=(2.0, 0.0, 0.0)),
+        rocker.at(),
+        ground.at(JointFrame(xyz=(2.0, 0.0, 0.0))),
         dofs=dofs,
     )
     if second_closure:
         assembly.joint(
             "crank_rocker",
-            body0=crank,
-            frame0=JointFrame(xyz=(2.0, 0.0, 0.0)),
-            body1=rocker,
+            crank.at(JointFrame(xyz=(2.0, 0.0, 0.0))),
+            rocker.at(),
             dofs=dofs,
         )
     assembly.articulation("main", root=ground, joints=(a, b, c))
@@ -150,11 +146,7 @@ def test_fixed_world_joint_is_the_articulation_root_and_has_one_body_target(
     assembly = RigidBodyAssembly("mounted")
     base = body(assembly, "base")
     mount = assembly.joint(
-        "mount",
-        body0=WORLD,
-        frame0=JointFrame(xyz=(1.0, 2.0, 3.0)),
-        body1=base,
-        frame1=JointFrame(rpy=(0.1, 0.2, 0.3)),
+        "mount", WORLD.at(JointFrame(xyz=(1.0, 2.0, 3.0))), base.at(JointFrame(rpy=(0.1, 0.2, 0.3)))
     )
     assembly.articulation("fixed", root=mount, joints=(mount,))
 
@@ -179,10 +171,8 @@ def test_simple_joints_use_specialized_native_schemas_and_radian_limits_become_d
     b = body(assembly, "b")
     joint = assembly.joint(
         "hinge",
-        body0=a,
-        frame0=JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.2, 0.1, 0.0)),
-        body1=b,
-        frame1=JointFrame(xyz=(-0.1, 0.0, 0.2), rpy=(0.0, 0.3, 0.4)),
+        a.at(JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.2, 0.1, 0.0))),
+        b.at(JointFrame(xyz=(-0.1, 0.0, 0.2), rpy=(0.0, 0.3, 0.4))),
         dofs=(JointDOF(JointAxis.ROT_Y, limits=(-math.pi / 2, math.pi / 4)),),
     )
     assembly.articulation("main", root=a, joints=(joint,))
@@ -206,8 +196,8 @@ def test_multi_dof_joint_uses_generic_usd_joint_and_per_axis_limit_apis(
     b = body(assembly, "b")
     assembly.joint(
         "planar",
-        body0=a,
-        body1=b,
+        a.at(),
+        b.at(),
         dofs=(
             JointDOF(JointAxis.TRANS_X, limits=(-0.2, 0.3)),
             JointDOF(JointAxis.ROT_Z),

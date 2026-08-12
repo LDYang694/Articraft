@@ -25,7 +25,6 @@ MuJoCo is an optional dependency. Install it with ``uv sync --group sim``.
 from __future__ import annotations
 
 import math
-import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,27 +74,19 @@ class SimulationUnavailable(RuntimeError):
     """MuJoCo is not installed."""
 
 
+class SimulationCapabilityError(ValueError):
+    """The exported graph uses constraints this MuJoCo translator cannot preserve."""
+
+
 @dataclass(frozen=True)
 class Trajectory:
-    """The simulated motion, in the terms the viewer already understands.
-
-    The viewer poses an object by moving joints, so a recording is the joint
-    values over time. It pins the root at the origin, which simulation does not,
-    so the root's pose travels alongside.
-    """
+    """Authoritative world-space body poses recorded from a simulation."""
 
     fps: float
-    root: str
-    joint_names: tuple[str, ...]
     frames: tuple[dict[str, Any], ...]
 
     def to_payload(self) -> dict[str, Any]:
-        return {
-            "fps": self.fps,
-            "root": self.root,
-            "joints": list(self.joint_names),
-            "frames": list(self.frames),
-        }
+        return {"fps": self.fps, "frames": list(self.frames)}
 
 
 @dataclass(frozen=True)
@@ -195,8 +186,15 @@ class _Joint:
     excluded: bool = False
     """Marked ``physics:excludeFromArticulation``: a loop closing constraint."""
     parent_anchor: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    extra_axes: tuple[tuple[str, tuple[float, float, float], float | None, float | None], ...] = ()
-    """Further free axes on a D6 joint, as (kind, axis, lower, upper)."""
+    axis_in_parent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """The same joint axis expressed in body0's frame, for flipped joints."""
+    extra_axes: tuple[
+        tuple[
+            str, tuple[float, float, float], tuple[float, float, float], float | None, float | None
+        ],
+        ...,
+    ] = ()
+    """Further free axes on a D6 joint, as (kind, axis, axis_in_parent, lower, upper)."""
 
 
 @dataclass
@@ -205,16 +203,64 @@ class _Scene:
 
     parts: dict[str, Usd.Prim] = field(default_factory=dict)
     joints: list[_Joint] = field(default_factory=list)
+    articulation_root: str | None = None
+    world_joints: list[str] = field(default_factory=list)
+    """Joints anchored to WORLD, which this translator cannot express yet."""
 
     @property
     def tree_joints(self) -> list[_Joint]:
         return [joint for joint in self.joints if not joint.excluded]
 
+    def orient_tree(self) -> None:
+        """Point every tree joint away from the root.
+
+        ``body0``/``body1`` are symmetric in the assembly, so a joint may be
+        authored child-first. MuJoCo nests bodies, so one pointing backwards
+        makes its own child a second root. Walk out from the articulation root
+        and swap the ones facing the wrong way.
+        """
+
+        pending = self.tree_joints
+        seen = {self.articulation_root} if self.articulation_root in self.parts else set()
+        while pending:
+            reachable = [j for j in pending if j.parent in seen or j.child in seen]
+            if not reachable:  # no root marked, or a separate component
+                reachable = [pending[0]]
+                seen.add(pending[0].parent)
+            for joint in reachable:
+                if joint.parent not in seen:
+                    joint.parent, joint.child = joint.child, joint.parent
+                    joint.anchor, joint.parent_anchor = joint.parent_anchor, joint.anchor
+                    # MJCF wants the axis in the child body's frame. After the
+                    # swap the child is body0, so negating the body1-frame
+                    # axis is only right when both bodies rest unrotated; use
+                    # the axis as body0 expresses it instead.
+                    joint.axis = _negated(joint.axis_in_parent)
+                    joint.lower, joint.upper = (
+                        (None if joint.upper is None else -joint.upper),
+                        (None if joint.lower is None else -joint.lower),
+                    )
+                    joint.extra_axes = tuple(
+                        (
+                            kind,
+                            _negated(axis_in_parent),
+                            _negated(axis),
+                            (None if high is None else -high),
+                            (None if low is None else -low),
+                        )
+                        for kind, axis, axis_in_parent, low, high in joint.extra_axes
+                    )
+                seen.update((joint.parent, joint.child))
+            pending = [joint for joint in pending if joint not in reachable]
+
     def root(self) -> str:
         children = {joint.child for joint in self.tree_joints}
         roots = [name for name in self.parts if name not in children]
         if len(roots) != 1:
-            raise ValueError(f"expected exactly one root part, found {roots}")
+            raise SimulationCapabilityError(
+                "MuJoCo simulation requires one spanning articulation tree; "
+                f"found root bodies {roots!r}"
+            )
         return roots[0]
 
 
@@ -253,8 +299,16 @@ def simulate_usdz(
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
+    # Trajectory frames are keyed by authored names: the viewer looks bodies
+    # and joints up by articraft:name, while MJCF names are the sanitized USD
+    # prim names. New exports keep the two equal, but legacy stages may not.
+    authored = _authored_names(Usd.Stage.Open(str(usdz)))
     names = tuple(
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, index) for index in range(1, model.nbody)
+        authored.get(raw, raw)
+        for raw in (
+            str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, index))
+            for index in range(1, model.nbody)
+        )
     )
     start = data.xpos[1:].copy()
     separations = _tracked_body_separations(
@@ -270,7 +324,10 @@ def simulate_usdz(
         if model.jnt_type[index] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE)
     ]
     joint_names = tuple(
-        str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, index)) for index in movable
+        authored.get(raw, raw)
+        for raw in (
+            str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, index)) for index in movable
+        )
     )
 
     if scenario == "release":
@@ -296,12 +353,18 @@ def simulate_usdz(
     def frame(time: float) -> dict[str, Any]:
         return {
             "t": round(time, 4),
-            # MuJoCo quaternions are (w, x, y, z).
-            "root": {
-                "pos": [round(float(value), 6) for value in data.xpos[root_body]],
-                "quat": [round(float(value), 6) for value in data.xquat[root_body]],
+            "bodies": {
+                name: {
+                    "pos": [round(float(value), 6) for value in data.xpos[index]],
+                    # MuJoCo quaternions are (w, x, y, z).
+                    "quat": [round(float(value), 6) for value in data.xquat[index]],
+                }
+                for index, name in enumerate(names, start=1)
             },
-            "joints": [round(float(data.qpos[model.jnt_qposadr[index]]), 6) for index in movable],
+            "dofs": {
+                name: round(float(data.qpos[model.jnt_qposadr[index]]), 6)
+                for name, index in zip(joint_names, movable, strict=True)
+            },
         }
 
     deepest = 0.0
@@ -369,8 +432,6 @@ def simulate_usdz(
         expected_friction=touching,
         trajectory=Trajectory(
             fps=fps,
-            root=str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, root_body)),
-            joint_names=joint_names,
             frames=tuple(frames),
         ),
     )
@@ -440,6 +501,22 @@ def write_mjcf(usdz: Path, out_dir: Path) -> Path:
     if stage is None:
         raise ValueError(f"could not open {usdz}")
     scene = _read_scene(stage)
+    if scene.world_joints:
+        raise SimulationCapabilityError(
+            "MuJoCo translation cannot yet anchor joints to WORLD; dropping them "
+            "would simulate the mechanism free-floating: "
+            + ", ".join(repr(name) for name in scene.world_joints)
+        )
+    unsupported_closures = [
+        joint.name
+        for joint in scene.joints
+        if joint.excluded and (joint.kind == "slide" or joint.extra_axes)
+    ]
+    if unsupported_closures:
+        raise SimulationCapabilityError(
+            "MuJoCo translation cannot preserve prismatic or multi-DOF loop constraints: "
+            + ", ".join(repr(name) for name in unsupported_closures)
+        )
     root = scene.root()
 
     lowest = _lowest_point(scene)
@@ -470,15 +547,6 @@ def write_mjcf(usdz: Path, out_dir: Path) -> Path:
     if closures:
         equality = ET.SubElement(mujoco_el, "equality")
         for joint in closures:
-            if joint.kind == "slide":
-                # A point constraint cannot carry a sliding pin; leave it to
-                # engines with native prismatic loop constraints.
-                warnings.warn(
-                    f"prismatic loop closure {joint.name!r} is not enforced in MuJoCo; "
-                    "the loop simulates open",
-                    stacklevel=2,
-                )
-                continue
             # MuJoCo's default equality impedance is sized for light objects;
             # a multi tonne linkage sags visibly on it. A stiff pin is the
             # honest reading of a physical pin.
@@ -532,26 +600,59 @@ _D6_AXES = {
 
 def _general_joint_axes(
     prim: Usd.Prim,
-) -> list[tuple[str, tuple[float, float, float], float | None, float | None]]:
+) -> list[
+    tuple[str, tuple[float, float, float], tuple[float, float, float], float | None, float | None]
+]:
     """The free axes of a UsdPhysics.Joint, in USD's own order.
 
     A D6 joint locks an axis with a LimitAPI whose low exceeds its high, and
     leaves an axis free by carrying no LimitAPI for it at all. Anything else is
     a limited axis. MuJoCo has no six-axis joint, so each free axis becomes a
     sibling hinge or slide on the same body, which composes to the same motion.
+    Each entry carries the axis in both endpoint frames, so a joint authored
+    child-first can be flipped without leaving the axis in the wrong body.
     """
 
-    free: list[tuple[str, tuple[float, float, float], float | None, float | None]] = []
+    free: list[
+        tuple[
+            str, tuple[float, float, float], tuple[float, float, float], float | None, float | None
+        ]
+    ] = []
     for token, (kind, axis) in _D6_AXES.items():
         low = _number(_attr(prim, f"limit:{token}:physics:low"))
         high = _number(_attr(prim, f"limit:{token}:physics:high"))
         if low is not None and high is not None and low > high:
             continue  # locked
+        child_axis = _rotated_axis(prim, axis, "physics:localRot1")
+        parent_axis = _rotated_axis(prim, axis, "physics:localRot0")
         if low is None and high is None:
-            free.append((kind, axis, None, None))  # free, unlimited
+            free.append((kind, child_axis, parent_axis, None, None))  # free, unlimited
             continue
-        free.append((kind, axis, low, high))
+        free.append((kind, child_axis, parent_axis, low, high))
     return free
+
+
+def _negated(axis: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (-axis[0], -axis[1], -axis[2])
+
+
+def _authored_names(stage: Usd.Stage | None) -> dict[str, str]:
+    """Map sanitized prim names to authored ``articraft:name`` values."""
+
+    if stage is None:
+        return {}
+    world = stage.GetDefaultPrim()
+    objects = [prim for prim in world.GetChildren() if _bodies_scope(prim)]
+    if len(objects) != 1:
+        return {}
+    scopes = [_bodies_scope(objects[0]), objects[0].GetChild("joints")]
+    mapping: dict[str, str] = {}
+    for scope in scopes:
+        for prim in scope.GetChildren() if scope else []:
+            value = prim.GetAttribute("articraft:name").Get()
+            if value:
+                mapping[prim.GetName()] = str(value)
+    return mapping
 
 
 def _read_scene(stage: Usd.Stage) -> _Scene:
@@ -564,20 +665,51 @@ def _read_scene(stage: Usd.Stage) -> _Scene:
     bodies = _bodies_scope(obj)
     assert bodies is not None
     scene = _Scene(parts={prim.GetName(): prim for prim in bodies.GetChildren()})
+    scene.articulation_root = next(
+        (name for name, prim in scene.parts.items() if prim.HasAPI(UsdPhysics.ArticulationRootAPI)),
+        None,
+    )
     joints_scope = obj.GetChild("joints")
+    if scene.articulation_root is None and joints_scope:
+        # A world-anchored assembly puts ArticulationRootAPI on the anchoring
+        # joint prim, not on a body; the viewer already reads both.
+        for prim in joints_scope.GetChildren():
+            if not prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                continue
+            anchored = [
+                target.name
+                for index in (0, 1)
+                for target in prim.GetRelationship(f"physics:body{index}").GetTargets()
+                if target.name in scene.parts
+            ]
+            if anchored:
+                scene.articulation_root = anchored[0]
+                break
     for prim in joints_scope.GetChildren() if joints_scope else []:
         type_name = str(prim.GetTypeName())
         general = type_name == "PhysicsJoint"
         kind = _JOINT_TYPES.get(type_name)
         if not general and type_name not in _JOINT_TYPES:
             continue
-        free: list[tuple[str, tuple[float, float, float], float | None, float | None]] = []
+        free: list[
+            tuple[
+                str,
+                tuple[float, float, float],
+                tuple[float, float, float],
+                float | None,
+                float | None,
+            ]
+        ] = []
         if general:
             free = _general_joint_axes(prim)
             # every axis locked is a fixed joint by another name
             kind = free[0][0] if free else None
         bodies = [prim.GetRelationship(f"physics:body{index}").GetTargets() for index in (0, 1)]
         if not all(bodies):
+            # A joint to WORLD has one empty body rel. MuJoCo could anchor
+            # it, but this translator does not yet; dropping it silently
+            # would simulate a wall-mounted mechanism free-floating.
+            scene.world_joints.append(prim.GetName())
             continue
         scene.joints.append(
             _Joint(
@@ -587,27 +719,43 @@ def _read_scene(stage: Usd.Stage) -> _Scene:
                 child=bodies[1][0].name,
                 anchor=_triple(_attr(prim, "physics:localPos1", (0.0, 0.0, 0.0))),
                 axis=free[0][1] if free else _joint_axis(prim),
-                lower=free[0][2] if free else _number(_attr(prim, "physics:lowerLimit")),
-                upper=free[0][3] if free else _number(_attr(prim, "physics:upperLimit")),
+                lower=free[0][3] if free else _number(_attr(prim, "physics:lowerLimit")),
+                upper=free[0][4] if free else _number(_attr(prim, "physics:upperLimit")),
                 excluded=bool(_attr(prim, "physics:excludeFromArticulation", False)),
                 parent_anchor=_triple(_attr(prim, "physics:localPos0", (0.0, 0.0, 0.0))),
+                axis_in_parent=(free[0][2] if free else _joint_axis(prim, "physics:localRot0")),
                 extra_axes=tuple(free[1:]),
             )
         )
+    scene.orient_tree()
     return scene
 
 
-def _joint_axis(prim: Usd.Prim) -> tuple[float, float, float]:
-    """Return the USD joint axis in body1's frame, as MJCF requires."""
+def _joint_axis(
+    prim: Usd.Prim, rotation_attr: str = "physics:localRot1"
+) -> tuple[float, float, float]:
+    """Return the USD joint axis in one endpoint body's frame.
+
+    MJCF wants the axis in the frame of whichever body ends up as the MuJoCo
+    child, so callers read it through ``physics:localRot1`` for body1 and
+    ``physics:localRot0`` for a joint flipped to hang from body0.
+    """
+
     token = str(_attr(prim, "physics:axis", "X"))
     axis = _AXES.get(token)
     if axis is None:
         raise ValueError(f"unsupported USD joint axis: {token!r}")
+    return _rotated_axis(prim, axis, rotation_attr)
 
-    rotation = _attr(prim, "physics:localRot1")
+
+def _rotated_axis(
+    prim: Usd.Prim,
+    axis: tuple[float, float, float],
+    rotation_attr: str,
+) -> tuple[float, float, float]:
+    rotation = _attr(prim, rotation_attr)
     if rotation is None:
         return axis
-
     frame = Gf.Matrix4d(1.0)
     frame.SetRotate(rotation)
     transformed = frame.TransformDir(Gf.Vec3d(*axis)).GetNormalized()
@@ -649,7 +797,7 @@ def _add_body(
             attributes["range"] = f"{joint.lower * scale:.6f} {joint.upper * scale:.6f}"
             attributes["limited"] = "true"
         ET.SubElement(body, "joint", attributes)
-        for index, (kind, axis, low, high) in enumerate(joint.extra_axes, start=2):
+        for index, (kind, axis, _parent_axis, low, high) in enumerate(joint.extra_axes, start=2):
             extra = {
                 "name": f"{joint.name}_{index}",
                 "type": kind,

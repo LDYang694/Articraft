@@ -318,29 +318,22 @@ def test_compiler_owned_checks_keep_their_codes_and_sources() -> None:
                 kind=FailureKind.MODEL_VALIDITY,
             ),
             TestFailure(
-                name="check_single_root_part",
-                details="Expected exactly one root part, found 2: ['a', 'b']",
-                kind=FailureKind.SINGLE_ROOT,
-            ),
-            TestFailure(
                 name="fail_if_isolated_parts()",
                 details="Isolated parts detected",
                 kind=FailureKind.ISOLATED_PART,
             ),
             TestFailure(
                 name="fail_if_parts_overlap_in_current_pose()",
-                details="Part overlaps detected",
+                details="RigidBody overlaps detected",
                 kind=FailureKind.OVERLAP,
             ),
-            sources=("compiler",) * 4,
+            sources=("compiler",) * 3,
         ),
     )
 
     by_name = {s["check_name"]: s for s in report["signal_bundle"]["signals"]}
     assert by_name["check_model_valid"]["code"] == "QC_MODEL_VALIDITY"
     assert by_name["check_model_valid"]["source"] == "compiler"
-    assert by_name["check_single_root_part"]["code"] == "QC_SINGLE_ROOT_POLICY"
-    assert by_name["check_single_root_part"]["group"] == "build"
     assert by_name["fail_if_isolated_parts()"]["code"] == "QC_ISOLATED_PART"
     assert by_name["fail_if_isolated_parts()"]["source"] == "compiler"
     assert by_name["fail_if_parts_overlap_in_current_pose()"]["code"] == "QC_REAL_OVERLAP"
@@ -373,7 +366,6 @@ def test_authored_checks_with_the_same_findings_map_to_test_codes() -> None:
 def test_every_failure_kind_maps_to_a_specific_signal() -> None:
     expected_kinds = {
         FailureKind.MODEL_VALIDITY: "model_validity",
-        FailureKind.SINGLE_ROOT: "single_root_policy",
         FailureKind.MESH_HEALTH: "mesh_health",
         FailureKind.ISOLATED_PART: "isolated_part",
         FailureKind.DISCONNECTED_GEOMETRY: "disconnected_geometry",

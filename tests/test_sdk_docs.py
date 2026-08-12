@@ -10,7 +10,7 @@ import articraft.sdk as sdk
 import articraft.sdk.mesh as sdk_mesh
 from articraft import package_dir
 from articraft.errors import MiniArticraftError
-from articraft.sdk import ArticulatedObject, TestReport
+from articraft.sdk import RigidBodyAssembly, TestReport
 from articraft.sdk.errors import SDKError, ValidationError
 
 
@@ -29,7 +29,7 @@ def test_quickstart_is_short_and_routes_to_targeted_references() -> None:
 
     assert len(quickstart) < 5000
     for reference in [
-        "docs/sdk/common/30_articulated_object.md",
+        "docs/sdk/common/30_assembly.md",
         "docs/sdk/common/35_joints.md",
         "docs/sdk/common/40_testing.md",
         "docs/sdk/mesh/00_mesh_geometry.md",
@@ -98,16 +98,16 @@ def test_sdk_is_a_leaf_package_with_compatible_errors() -> None:
 def test_key_apis_are_documented_by_their_owner_pages() -> None:
     sdk_docs = package_dir / "sdk" / "docs"
     expected = {
-        "common/30_articulated_object.md": (
-            "`ArticulatedObject`",
+        "common/30_assembly.md": (
+            "`RigidBodyAssembly`",
             "`Material`",
-            "`Part`",
-            "`Material`",
-            "`part.add(...)`",
+            "`RigidBody`",
+            "`body.add(...)`",
         ),
         "common/35_joints.md": (
-            "`Origin`",
-            "`MotionLimits`",
+            "`JointFrame`",
+            "`JointDOF`",
+            "`model.joint(...)`",
             "`model.articulation(...)`",
         ),
         "common/40_testing.md": (
@@ -221,14 +221,18 @@ def test_sdk_docs_and_examples_are_package_data() -> None:
         assert pattern in package_data
 
 
-def test_all_new_sdk_examples_execute() -> None:
-    examples = package_dir / "sdk" / "docs" / "examples"
+def test_all_first_party_sdk_examples_execute() -> None:
+    repo_root = package_dir.parents[1]
+    paths = [
+        *(package_dir / "sdk" / "docs" / "examples").glob("*.py"),
+        *repo_root.glob("examples/*/main.py"),
+    ]
 
-    for path in sorted(examples.glob("*.py")):
+    for path in sorted(paths):
         values = runpy.run_path(str(path))
         model = values["object_model"]
         report = values["run_tests"]()
-        assert isinstance(model, ArticulatedObject), path.name
+        assert isinstance(model, RigidBodyAssembly), path.name
         model.validate()
         assert isinstance(report, TestReport), path.name
         assert report.passed, (path.name, report.failures)
@@ -252,8 +256,8 @@ def test_prompt_and_docs_state_the_new_authoring_contract() -> None:
         "build123d",
         "MeshGeometry",
         "name=",
-        "Origin",
-        "MotionLimits",
+        "JointFrame",
+        "JointDOF",
         "realistic geometry",
         "primary mechanisms",
         "floating parts",

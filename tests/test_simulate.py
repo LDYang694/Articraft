@@ -9,49 +9,50 @@ from pathlib import Path
 import pytest
 
 from articraft.sdk import (
-    ArticulatedObject,
-    ArticulationType,
     BoxGeometry,
+    JointAxis,
+    JointDOF,
+    JointFrame,
     Material,
-    MotionLimits,
-    Origin,
+    RigidBodyAssembly,
 )
-from articraft.sdk.export import export_object
-from articraft.simulate import simulate_usdz, write_mjcf
+from articraft.sdk.export import export_assembly
+from articraft.simulate import SimulationCapabilityError, simulate_usdz, write_mjcf
 
 mujoco = pytest.importorskip("mujoco", reason="simulation needs the sim dependency group")
 
 LOWER, UPPER = 0.0, 1.5  # radians, as authored
 
 
-def _hinged_box() -> ArticulatedObject:
-    model = ArticulatedObject("crate")
-    base = model.part("base")
+def _hinged_box(
+    axis: JointAxis = JointAxis.ROT_X,
+    rpy: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> RigidBodyAssembly:
+    model = RigidBodyAssembly("crate")
+    base = model.rigid_body("base")
     base.add(
         BoxGeometry((0.30, 0.20, 0.10)).translate(0.0, 0.0, 0.05),
         name="body",
         material=Material.HARDWOOD,
     )
-    lid = model.part("lid")
+    lid = model.rigid_body("lid")
     lid.add(
         BoxGeometry((0.30, 0.20, 0.01)).translate(0.0, 0.10, 0.0),
         name="panel",
         material=Material.STEEL,
     )
-    model.articulation(
+    model.joint(
         "lid_hinge",
-        ArticulationType.REVOLUTE,
-        base,
-        lid,
-        origin=Origin(xyz=(0.0, -0.10, 0.10)),
-        axis=(1.0, 0.0, 0.0),
-        motion_limits=MotionLimits(effort=5.0, velocity=2.0, lower=LOWER, upper=UPPER),
+        base.at(JointFrame(rpy=rpy)),
+        lid.at(JointFrame()),
+        dofs=(JointDOF(axis, limits=(LOWER, UPPER)),),
     )
+    model.articulation("main", root=base, joints=["lid_hinge"])
     return model
 
 
-def _export(model: ArticulatedObject, tmp_path: Path) -> Path:
-    return Path(export_object(model, tmp_path).usdz)
+def _export(model: RigidBodyAssembly, tmp_path: Path) -> Path:
+    return Path(export_assembly(model, tmp_path).usdz)
 
 
 def test_an_exported_object_stands_up_on_a_floor(tmp_path: Path) -> None:
@@ -88,8 +89,8 @@ def test_revolute_limits_convert_from_degrees_to_radians(tmp_path: Path) -> None
 
 
 def test_a_part_with_no_joint_gets_a_free_body(tmp_path: Path) -> None:
-    model = ArticulatedObject("lone")
-    model.part("body").add(BoxGeometry((0.1, 0.1, 0.1)), name="cube", material=Material.STEEL)
+    model = RigidBodyAssembly("lone")
+    model.rigid_body("body").add(BoxGeometry((0.1, 0.1, 0.1)), name="cube", material=Material.STEEL)
 
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
     root = ET.parse(tmp_path / "sim" / "model.xml").getroot()
@@ -98,8 +99,8 @@ def test_a_part_with_no_joint_gets_a_free_body(tmp_path: Path) -> None:
 
 
 def test_contact_friction_reaches_the_geom(tmp_path: Path) -> None:
-    model = ArticulatedObject("gripped")
-    part = model.part("body")
+    model = RigidBodyAssembly("gripped")
+    part = model.rigid_body("body")
     part.add(BoxGeometry((0.1, 0.1, 0.1)), name="pad", material=Material.RUBBER)
 
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
@@ -114,8 +115,8 @@ def test_material_friction_reaches_the_contact_not_the_floors(tmp_path: Path) ->
     """MuJoCo combines friction with max, so a floor with any of its own masks ours."""
     import mujoco
 
-    model = ArticulatedObject("block")
-    model.part("body").add(BoxGeometry((0.1, 0.1, 0.1)), name="cube", material=Material.STEEL)
+    model = RigidBodyAssembly("block")
+    model.rigid_body("body").add(BoxGeometry((0.1, 0.1, 0.1)), name="cube", material=Material.STEEL)
 
     path = write_mjcf(_export(model, tmp_path), tmp_path / "sim")
     compiled = mujoco.MjModel.from_xml_path(str(path))
@@ -131,8 +132,10 @@ def test_tilting_measures_the_friction_that_was_authored(tmp_path: Path) -> None
     """A grippier material has to hold to a steeper angle than a slippery one."""
     angles = {}
     for material in (Material.RUBBER, Material.STEEL):
-        model = ArticulatedObject("block")
-        model.part("body").add(BoxGeometry((0.12, 0.12, 0.06)), name="block", material=material)
+        model = RigidBodyAssembly("block")
+        model.rigid_body("body").add(
+            BoxGeometry((0.12, 0.12, 0.06)), name="block", material=material
+        )
         result = simulate_usdz(
             _export(model, tmp_path / material.name),
             tmp_path / material.name / "sim",
@@ -147,8 +150,10 @@ def test_tilting_measures_the_friction_that_was_authored(tmp_path: Path) -> None
 
 def test_a_tilt_run_stops_once_it_slips(tmp_path: Path) -> None:
     """Tilting past the slip angle topples the object and tells us nothing more."""
-    model = ArticulatedObject("block")
-    model.part("body").add(BoxGeometry((0.12, 0.12, 0.06)), name="block", material=Material.STEEL)
+    model = RigidBodyAssembly("block")
+    model.rigid_body("body").add(
+        BoxGeometry((0.12, 0.12, 0.06)), name="block", material=Material.STEEL
+    )
 
     result = simulate_usdz(
         _export(model, tmp_path), tmp_path / "sim", seconds=20.0, scenario="tilt"
@@ -168,18 +173,18 @@ def test_an_unknown_scenario_is_rejected(tmp_path: Path) -> None:
 
 def test_a_rotated_rest_pose_survives_the_translation(tmp_path: Path) -> None:
     """A joint with an rpy rotates its child; dropping that misplaces the part."""
-    model = ArticulatedObject("tilted")
-    base = model.part("base")
+    model = RigidBodyAssembly("tilted")
+    base = model.rigid_body("base")
     base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
-    arm = model.part("arm")
+    arm = model.rigid_body("arm")
     arm.add(BoxGeometry((0.02, 0.02, 0.20)), name="post", material=Material.STEEL)
-    model.articulation(
+    model.joint(
         "mount",
-        ArticulationType.FIXED,
-        base,
-        arm,
-        origin=Origin(xyz=(0.0, 0.0, 0.05), rpy=(0.0, math.pi / 4, 0.0)),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.025), rpy=(0.0, math.pi / 4.0, 0.0))),
+        arm.at(JointFrame()),
+        dofs=(),
     )
+    model.articulation("main", root=base, joints=["mount"])
 
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
     arm_body = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//body/body")
@@ -200,65 +205,57 @@ def test_releasing_a_joint_produces_motion_worth_watching(tmp_path: Path) -> Non
     )
 
     assert result.trajectory is not None
-    angles = [frame["joints"][0] for frame in result.trajectory.frames]
+    angles = [frame["dofs"]["lid_hinge"] for frame in result.trajectory.frames]
     assert max(angles) - min(angles) > 0.5  # radians
     assert result.peak_joint_speed is not None and result.peak_joint_speed > 1.0
 
 
 def _hinge_with_axis(
-    axis: tuple[float, float, float],
+    axis: JointAxis,
     rpy: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> ArticulatedObject:
-    model = _hinged_box()
-    joint = model.articulations[-1]
-    joint.axis = axis
-    joint.origin = Origin(xyz=joint.origin.xyz, rpy=rpy)
-    return model
+) -> RigidBodyAssembly:
+    return _hinged_box(axis=axis, rpy=rpy)
 
 
 @pytest.mark.parametrize(
-    "axis",
+    ("axis", "expected"),
     [
-        (-1.0, 0.0, 0.0),
-        (0.0, 1.0, 1.0),
-        (1.0, -2.0, 3.0),
+        (JointAxis.ROT_X, (1.0, 0.0, 0.0)),
+        (JointAxis.ROT_Y, (0.0, 1.0, 0.0)),
+        (JointAxis.ROT_Z, (0.0, 0.0, 1.0)),
     ],
 )
-def test_joint_axis_survives_the_usd_to_mjcf_round_trip(
-    tmp_path: Path, axis: tuple[float, float, float]
+def test_each_joint_axis_survives_the_usd_to_mjcf_round_trip(
+    tmp_path: Path, axis: JointAxis, expected: tuple[float, float, float]
 ) -> None:
-    model = _hinge_with_axis(axis, rpy=(0.2, -0.3, math.pi / 2))
+    model = _hinge_with_axis(axis)
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
     joint = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//joint")
 
     assert joint is not None
     actual = tuple(float(value) for value in str(joint.get("axis")).split())
-    length = math.hypot(*axis)
-    expected = tuple(value / length for value in axis)
     assert actual == pytest.approx(expected, abs=1e-6)
 
 
 def test_prismatic_travel_is_not_reported_as_part_separation(tmp_path: Path) -> None:
-    model = ArticulatedObject("lift")
-    base = model.part("base")
+    model = RigidBodyAssembly("lift")
+    base = model.rigid_body("base")
     base.add(
         BoxGeometry((0.10, 0.10, 0.02)),
         name="base_slab",
         material=Material.STEEL,
     )
-    body = model.part("body")
+    body = model.rigid_body("body")
     body.add(
         BoxGeometry((0.08, 0.08, 0.10)).translate(0.0, 0.0, 0.06),
         name="body_box",
         material=Material.STEEL,
     )
-    model.articulation(
+    model.joint(
         "slide",
-        ArticulationType.PRISMATIC,
-        base,
-        body,
-        axis=(0.0, 0.0, 1.0),
-        motion_limits=MotionLimits(lower=0.0, upper=0.10),
+        base.at(JointFrame()),
+        body.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.TRANS_Z, limits=(0.0, 0.10)),),
     )
 
     result = simulate_usdz(
@@ -269,7 +266,7 @@ def test_prismatic_travel_is_not_reported_as_part_separation(tmp_path: Path) -> 
     )
 
     assert result.trajectory is not None
-    positions = [frame["joints"][0] for frame in result.trajectory.frames]
+    positions = [frame["dofs"]["slide"] for frame in result.trajectory.frames]
     assert abs(positions[0]) > 0.005
     assert result.parts_stayed_together, result.summary()
 
@@ -295,10 +292,8 @@ def test_simulate_reads_a_rigid_body_graph_stage(tmp_path) -> None:
     )
     assembly.joint(
         "lid_hinge",
-        body0=base,
-        frame0=JointFrame(xyz=(0.0, -0.10, 0.10)),
-        body1=lid,
-        frame1=JointFrame(xyz=(0.0, -0.10, 0.0)),
+        base.at(JointFrame(xyz=(0.0, -0.10, 0.10))),
+        lid.at(JointFrame(xyz=(0.0, -0.10, 0.0))),
         dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.5)),),
     )
     assembly.articulation("main", root=base, joints=["lid_hinge"])
@@ -323,10 +318,8 @@ def test_a_multi_dof_joint_becomes_one_mjcf_joint_per_free_axis(tmp_path) -> Non
     head.add(BoxGeometry((0.06, 0.06, 0.06)), name="plate", material=Material.STEEL)
     assembly.joint(
         "socket",
-        body0=post,
-        frame0=JointFrame(xyz=(0.0, 0.0, 0.06)),
-        body1=head,
-        frame1=JointFrame(),
+        post.at(JointFrame(xyz=(0.0, 0.0, 0.06))),
+        head.at(JointFrame()),
         dofs=tuple(
             JointDOF(axis, limits=(-0.6, 0.6))
             for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z)
@@ -340,3 +333,87 @@ def test_a_multi_dof_joint_becomes_one_mjcf_joint_per_free_axis(tmp_path) -> Non
 
     assert text.count('type="hinge"') == 3
     assert 'name="socket"' in text and 'name="socket_2"' in text and 'name="socket_3"' in text
+
+
+def test_a_joint_authored_child_first_still_nests_under_the_root(tmp_path: Path) -> None:
+    """``body0`` is not the parent -- the articulation root decides that.
+
+    MuJoCo nests bodies, so a joint pointing back at the root used to make its
+    own child a second root and the translation refused the whole model. A
+    generated excavator hit this: its cylinder rod eyes were authored rod-first.
+    """
+
+    model = RigidBodyAssembly("reversed")
+    base = model.rigid_body("base")
+    base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
+    arm = model.rigid_body("arm")
+    arm.add(BoxGeometry((0.02, 0.02, 0.20)), name="post", material=Material.STEEL)
+    # Authored child first: the arm carries body0, the base body1.
+    model.joint(
+        "mount",
+        arm.at(JointFrame()),
+        base.at(JointFrame(xyz=(0.0, 0.0, 0.025))),
+        dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.5)),),
+    )
+    model.articulation("main", root=base, joints=["mount"])
+
+    write_mjcf(_export(model, tmp_path), tmp_path / "sim")
+    root = ET.parse(tmp_path / "sim" / "model.xml").getroot()
+
+    top = [body for body in root.findall(".//worldbody/body") if body.get("name") != "floor"]
+    assert [body.get("name") for body in top] == ["base"]
+    assert [child.get("name") for child in top[0].findall("body")] == ["arm"]
+
+
+def test_a_revolute_loop_is_preserved_as_a_mujoco_constraint(tmp_path: Path) -> None:
+    model = RigidBodyAssembly("parallel_hinges")
+    base = model.rigid_body("base")
+    base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
+    arm = model.rigid_body("arm")
+    arm.add(BoxGeometry((0.02, 0.02, 0.2)), name="post", material=Material.STEEL)
+    tree = model.joint(
+        "tree_hinge",
+        base.at(),
+        arm.at(),
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.joint(
+        "closing_hinge",
+        base.at(),
+        arm.at(),
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.articulation("main", root=base, joints=(tree,))
+
+    path = write_mjcf(_export(model, tmp_path), tmp_path / "sim")
+    constraint = ET.parse(path).getroot().find(".//equality/connect")
+
+    assert constraint is not None
+    assert constraint.get("name") == "closing_hinge"
+
+
+def test_an_unsupported_loop_fails_before_writing_partial_mjcf(tmp_path: Path) -> None:
+    model = RigidBodyAssembly("parallel_slides")
+    base = model.rigid_body("base")
+    base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
+    carriage = model.rigid_body("carriage")
+    carriage.add(BoxGeometry((0.05, 0.05, 0.05)), name="block", material=Material.STEEL)
+    tree = model.joint(
+        "tree_slide",
+        base.at(),
+        carriage.at(),
+        dofs=(JointDOF(JointAxis.TRANS_X),),
+    )
+    model.joint(
+        "closing_slide",
+        base.at(),
+        carriage.at(),
+        dofs=(JointDOF(JointAxis.TRANS_X),),
+    )
+    model.articulation("main", root=base, joints=(tree,))
+    output = tmp_path / "sim"
+
+    with pytest.raises(SimulationCapabilityError, match="closing_slide"):
+        write_mjcf(_export(model, tmp_path), output)
+
+    assert not output.joinpath("model.xml").exists()

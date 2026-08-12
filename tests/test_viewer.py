@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import urllib.error
 import urllib.request
@@ -11,25 +12,31 @@ import pytest
 from build123d import Box
 
 from articraft import package_dir
-from articraft.sdk import ArticulatedObject, ArticulationType, MotionLimits, Origin
-from articraft.sdk.export import export_object
+from articraft.sdk import (
+    JointAxis,
+    JointDOF,
+    JointFrame,
+    RigidBodyAssembly,
+)
+from articraft.sdk.export import export_assembly
 from articraft.viewer import _handler, load_viewer_run
 
 
 def test_load_viewer_run_reads_each_usdz_version(tmp_path) -> None:
     run_dir = tmp_path / "run-demo"
     result_dir = run_dir / "result"
-    export_object(_revolute_model(), result_dir)
-    export_object(_prismatic_model(), result_dir)
+    export_assembly(_revolute_model(), result_dir)
+    export_assembly(_prismatic_model(), result_dir)
 
     viewer_run = load_viewer_run(run_dir)
 
     assert [version["id"] for version in viewer_run.versions] == ["0001", "0000"]
     latest = cast(dict[str, Any], viewer_run.versions[0]["model"])
     assert latest["name"] == "slider"
+    assert latest["can_pose"] is True
     assert latest["parts"] == [
         {
-            "name": "base plate",
+            "name": "base_plate",
             "usd_name": "base_plate",
             "shapes": [
                 {
@@ -51,12 +58,15 @@ def test_load_viewer_run_reads_each_usdz_version(tmp_path) -> None:
         },
     ]
     joint = cast(list[dict[str, Any]], latest["articulations"])[0]
-    assert joint["name"] == "linear travel"
+    assert joint["name"] == "linear_travel"
     assert joint["type"] == "prismatic"
-    assert joint["parent"] == "base plate"
+    assert joint["parent"] == "base_plate"
     assert joint["child"] == "carriage"
-    assert joint["axis"] == [1.0, 1.0, 0.0]
-    assert joint["origin"] == {"xyz": [0.1, 0.2, 0.3], "rpy": [0.0, 0.1, 0.0]}
+    # A named axis plus a rotated frame: the diagonal lives in origin.rpy.
+    assert joint["axis"] == [1.0, 0.0, 0.0]
+    assert joint["origin"]["xyz"] == pytest.approx([0.1, 0.2, 0.3])
+    assert joint["origin"]["rpy"] == pytest.approx([0.0, 0.1, math.pi / 4.0])
+    assert joint["child_origin"] == {"xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]}
     limits = cast(dict[str, float], joint["motion_limits"])
     assert limits["lower"] == pytest.approx(-0.1)
     assert limits["upper"] == pytest.approx(0.2)
@@ -78,9 +88,63 @@ def test_load_viewer_run_rejects_empty_and_invalid_runs(tmp_path) -> None:
         load_viewer_run(invalid_run)
 
 
+def test_viewer_disables_direct_posing_for_closed_loops(tmp_path) -> None:
+    model = RigidBodyAssembly("loop")
+    base = model.rigid_body("base")
+    base.add(Box(0.2, 0.2, 0.1), name="body")
+    link = model.rigid_body("link")
+    link.add(Box(0.1, 0.02, 0.2), name="body")
+    tree = model.joint(
+        "tree",
+        base.at(),
+        link.at(),
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.joint(
+        "closure",
+        base.at(),
+        link.at(),
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.articulation("main", root=base, joints=(tree,))
+    run_dir = tmp_path / "run"
+    export_assembly(model, run_dir / "result")
+
+    graph = cast(dict[str, Any], load_viewer_run(run_dir).versions[0]["model"])
+
+    assert graph["can_pose"] is False
+
+
+def test_viewer_orients_symmetric_joint_from_the_articulation_root(tmp_path) -> None:
+    model = RigidBodyAssembly("child_first")
+    base = model.rigid_body("base")
+    base.add(Box(0.2, 0.2, 0.1), name="body")
+    arm = model.rigid_body("arm")
+    arm.add(Box(0.1, 0.02, 0.2), name="body")
+    hinge = model.joint(
+        "hinge",
+        arm.at(JointFrame(xyz=(0.2, 0.0, 0.0))),
+        base.at(JointFrame(xyz=(0.1, 0.0, 0.0))),
+        dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.75)),),
+    )
+    model.articulation("main", root=base, joints=(hinge,))
+    run_dir = tmp_path / "run"
+    export_assembly(model, run_dir / "result")
+
+    graph = cast(dict[str, Any], load_viewer_run(run_dir).versions[0]["model"])
+    joint = cast(list[dict[str, Any]], graph["articulations"])[0]
+
+    assert joint["parent"] == "base"
+    assert joint["child"] == "arm"
+    assert joint["origin"]["xyz"] == pytest.approx([0.1, 0.0, 0.0])
+    assert joint["child_origin"]["xyz"] == pytest.approx([0.2, 0.0, 0.0])
+    assert joint["axis"] == [0.0, -1.0, 0.0]
+    assert joint["motion_limits"] == {"lower": -0.75, "upper": 0.5}
+
+
 def test_viewer_handler_serves_only_known_routes(tmp_path) -> None:
     run_dir = tmp_path / "run-demo"
-    export_object(_revolute_model(), run_dir / "result")
+    export_assembly(_revolute_model(), run_dir / "result")
     viewer_run = load_viewer_run(run_dir)
     bootstrap = json.dumps(viewer_run.bootstrap()).encode()
     server = ThreadingHTTPServer(
@@ -122,38 +186,35 @@ def test_viewer_page_exposes_only_the_minimal_view_options() -> None:
     assert "index%palette.length" not in page
 
 
-def _revolute_model() -> ArticulatedObject:
-    model = ArticulatedObject("hinge")
-    base = model.part("base")
+def _revolute_model() -> RigidBodyAssembly:
+    model = RigidBodyAssembly("hinge")
+    base = model.rigid_body("base")
     base.add(Box(0.2, 0.2, 0.1), name="body")
-    door = model.part("door")
+    door = model.rigid_body("door")
     door.add(Box(0.1, 0.02, 0.2), name="panel")
-    model.articulation(
-        "hinge joint",
-        ArticulationType.REVOLUTE,
-        base,
-        door,
-        axis=(0.0, 1.0, 0.0),
-        motion_limits=MotionLimits(lower=-0.5, upper=0.75),
+    model.joint(
+        "hinge_joint",
+        base.at(JointFrame()),
+        door.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.ROT_Y, limits=(-0.5, 0.75)),),
     )
     return model
 
 
-def _prismatic_model() -> ArticulatedObject:
-    model = ArticulatedObject("slider")
-    base = model.part("base plate")
+def _prismatic_model() -> RigidBodyAssembly:
+    model = RigidBodyAssembly("slider")
+    base = model.rigid_body("base_plate")
     base.add(Box(0.3, 0.2, 0.05), name="base shape")
-    carriage = model.part("carriage")
+    carriage = model.rigid_body("carriage")
     carriage.add(Box(0.05, 0.05, 0.05), name="payload")
-    model.articulation(
-        "linear travel",
-        ArticulationType.PRISMATIC,
-        base,
-        carriage,
-        origin=Origin(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, 0.0)),
-        axis=(1.0, 1.0, 0.0),
-        motion_limits=MotionLimits(lower=-0.1, upper=0.2),
+    # A diagonal travel direction rides in the frame's rotation.
+    model.joint(
+        "linear_travel",
+        base.at(JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0))),
+        carriage.at(JointFrame()),
+        dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.1, 0.2)),),
     )
+    model.articulation("main", root=base, joints=["linear_travel"])
     return model
 
 
@@ -168,7 +229,16 @@ def test_viewer_composes_joint_frames_in_sdk_order() -> None:
     """
 
     page = (package_dir / "viewer.html").read_text(encoding="utf-8")
-    assert 'frame.rotation.set(...spec.origin.rpy,"ZYX")' in page
+    assert 'new THREE.Euler(...frame.rpy,"ZYX")' in page
+
+
+def test_viewer_keeps_body_nodes_flat_and_plays_complete_body_poses() -> None:
+    page = (package_dir / "viewer.html").read_text(encoding="utf-8")
+
+    assert "root.add(node)" in page
+    assert "parent.add(frame)" not in page
+    assert "Object.entries(frame.bodies??{})" in page
+    assert "previewButton.disabled=!state.version?.model.can_pose" in page
 
 
 def test_sdk_rpy_matrix_is_extrinsic_xyz() -> None:
@@ -176,10 +246,10 @@ def test_sdk_rpy_matrix_is_extrinsic_xyz() -> None:
 
     import numpy as np
 
-    from articraft.sdk._collision import _rpy_matrix
+    from articraft.sdk.assembly import _frame_matrix
 
     rpy = (0.0, -0.35, 2.09)
-    hinge = _rpy_matrix(rpy)[:3, :3] @ np.array([0.0, 1.0, 0.0])
+    hinge = _frame_matrix(JointFrame(rpy=rpy))[:3, :3] @ np.array([0.0, 1.0, 0.0])
     # A leg yawed off a pitched frame keeps a level hinge axis; the reversed
     # order tilts it out of plane, which is the bug this guards.
     assert abs(float(hinge[2])) < 1e-9
