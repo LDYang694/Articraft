@@ -5,10 +5,12 @@ box when you press play. This loads what we export -- rigid bodies, mass, collid
 contact materials, joints -- into MuJoCo, drops it on a floor, and reports what
 happened.
 
-MuJoCo has no USD importer, so the stage is translated to MJCF here. That
-translation is the part most likely to be wrong, so it is deliberately literal:
-every value comes from the schema we authored, and units are converted in exactly
-one place.
+MuJoCo's own USD import is experimental and absent from its PyPI wheels, so the
+stage is translated here -- directly into a ``mujoco.MjSpec`` model rather than
+into MJCF text. That translation is the part most likely to be wrong, so it is
+deliberately literal: every value comes from the schema we authored, and units
+are converted in exactly one place. ``write_mjcf`` serializes the compiled spec
+as MJCF for inspection.
 
 What this does **not** cover. A material authors static friction, dynamic
 friction, and restitution; only dynamic friction reaches the simulation. MuJoCo
@@ -25,7 +27,6 @@ MuJoCo is an optional dependency. Install it with ``uv sync --group sim``.
 from __future__ import annotations
 
 import math
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,8 @@ from pxr import (
 )
 from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
 
-# USD joint prim type -> MJCF joint type. A fixed joint welds the bodies, which
-# MuJoCo expresses by nesting them with no joint element at all.
+# USD joint prim type -> MuJoCo joint kind. A fixed joint welds the bodies,
+# which MuJoCo expresses by nesting them with no joint at all.
 _JOINT_TYPES: dict[str, str | None] = {
     "PhysicsRevoluteJoint": "hinge",
     "PhysicsPrismaticJoint": "slide",
@@ -293,9 +294,12 @@ def simulate_usdz(
             "MuJoCo is not installed; run `uv sync --group sim` to enable simulation"
         ) from exc
 
-    model_path = write_mjcf(usdz, work_dir)
-
-    model = mujoco.MjModel.from_xml_path(str(model_path))
+    spec = _build_spec(usdz)
+    model = spec.compile()
+    # The compiled model is what runs; the MJCF beside the run is for humans
+    # reading back what the translation decided.
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "model.xml").write_text(spec.to_xml(), encoding="utf-8")
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
@@ -494,9 +498,32 @@ def _floor_friction(model: Any, data: Any) -> float | None:
 
 
 def write_mjcf(usdz: Path, out_dir: Path) -> Path:
-    """Translate an exported stage into an MJCF model beside its meshes."""
+    """Translate an exported stage into a compiled, self-contained MJCF model."""
 
+    spec = _build_spec(usdz)
+    spec.compile()
     out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "model.xml"
+    path.write_text(spec.to_xml(), encoding="utf-8")
+    return path
+
+
+def _build_spec(usdz: Path) -> Any:
+    """Build the MuJoCo model for an exported stage, directly as a spec.
+
+    Building through ``mujoco.MjSpec`` keeps every value a number from the USD
+    schema to the compiled model: no string formatting, no mesh files on disk,
+    and compilation errors point at the translation instead of at a generated
+    file.
+    """
+
+    try:
+        import mujoco
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise SimulationUnavailable(
+            "MuJoCo is not installed; run `uv sync --group sim` to enable simulation"
+        ) from exc
+
     stage = Usd.Stage.Open(str(usdz))
     if stage is None:
         raise ValueError(f"could not open {usdz}")
@@ -523,59 +550,48 @@ def write_mjcf(usdz: Path, out_dir: Path) -> Path:
     lift = np.eye(4)
     lift[2, 3] = -lowest + DROP_HEIGHT
 
-    mujoco_el = ET.Element("mujoco", model=usdz.stem or "object")
-    ET.SubElement(mujoco_el, "compiler", angle="radian", meshdir=".")
-    ET.SubElement(mujoco_el, "option", timestep="0.002", integrator="implicitfast")
-    asset = ET.SubElement(mujoco_el, "asset")
-    world = ET.SubElement(mujoco_el, "worldbody")
-    # MuJoCo takes the elementwise MAX of the two geoms' friction, so a floor with
-    # any friction of its own would mask the material's. Zero here means the
-    # contact uses exactly what the shape's material authored.
-    ET.SubElement(
-        world,
-        "geom",
+    spec = mujoco.MjSpec()  # pyright: ignore[reportAttributeAccessIssue]
+    spec.modelname = usdz.stem or "object"
+    # The SDK authors radians and metres; tell the compiler so, rather than
+    # converting angles a second time on the way in.
+    spec.compiler.degree = False
+    spec.option.timestep = 0.002
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST  # pyright: ignore[reportAttributeAccessIssue]
+    # MuJoCo takes the elementwise MAX of the two geoms' friction, so a floor
+    # with any friction of its own would mask the material's. Zero here means
+    # the contact uses exactly what the shape's material authored.
+    spec.worldbody.add_geom(
         name="floor",
-        type="plane",
-        size="5 5 0.1",
-        pos="0 0 0",
-        friction="0 0.005 0.0001",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,  # pyright: ignore[reportAttributeAccessIssue]
+        size=[5.0, 5.0, 0.1],
+        friction=[0.0, 0.005, 0.0001],
     )
 
-    _add_body(world, asset, scene, root, np.linalg.inv(lift), stage, out_dir)
+    _add_body(spec, spec.worldbody, scene, root, np.linalg.inv(lift), stage)
 
-    closures = [joint for joint in scene.joints if joint.excluded]
-    if closures:
-        equality = ET.SubElement(mujoco_el, "equality")
-        for joint in closures:
-            # MuJoCo's default equality impedance is sized for light objects;
-            # a multi tonne linkage sags visibly on it. A stiff pin is the
-            # honest reading of a physical pin.
-            stiffness = {"solref": "0.004 1", "solimp": "0.99 0.999 0.0001 0.5 2"}
-            if joint.kind is None:
-                ET.SubElement(
-                    equality,
-                    "weld",
-                    {"name": joint.name, "body1": joint.parent, "body2": joint.child, **stiffness},
-                )
-            else:
-                # A hinge pin holds a shared point; the connect constraint is
-                # exactly that, anchored on the parent side of the pin.
-                ET.SubElement(
-                    equality,
-                    "connect",
-                    {
-                        "name": joint.name,
-                        "body1": joint.parent,
-                        "body2": joint.child,
-                        "anchor": _vector(joint.parent_anchor),
-                        **stiffness,
-                    },
-                )
-
-    path = out_dir / "model.xml"
-    ET.indent(mujoco_el)
-    path.write_text(ET.tostring(mujoco_el, encoding="unicode"), encoding="utf-8")
-    return path
+    for joint in scene.joints:
+        if not joint.excluded:
+            continue
+        # MuJoCo's default equality impedance is sized for light objects; a
+        # multi tonne linkage sags visibly on it. A stiff pin is the honest
+        # reading of a physical pin.
+        equality = spec.add_equality()
+        equality.name = joint.name
+        equality.objtype = mujoco.mjtObj.mjOBJ_BODY
+        equality.name1 = joint.parent
+        equality.name2 = joint.child
+        equality.solref = [0.004, 1.0]
+        equality.solimp = [0.99, 0.999, 0.0001, 0.5, 2.0]
+        if joint.kind is None:
+            # A weld with no authored relpose holds the compiled rest pose.
+            equality.type = mujoco.mjtEq.mjEQ_WELD  # pyright: ignore[reportAttributeAccessIssue]
+            equality.data[10] = 1.0  # torquescale, the MJCF default
+        else:
+            # A hinge pin holds a shared point; the connect constraint is
+            # exactly that, anchored on the parent side of the pin.
+            equality.type = mujoco.mjtEq.mjEQ_CONNECT  # pyright: ignore[reportAttributeAccessIssue]
+            equality.data[0:3] = joint.parent_anchor
+    return spec
 
 
 def _bodies_scope(prim: Usd.Prim) -> Usd.Prim | None:
@@ -763,82 +779,93 @@ def _rotated_axis(
 
 
 def _add_body(
-    parent_el: ET.Element,
-    asset: ET.Element,
+    spec: Any,
+    parent: Any,
     scene: _Scene,
     part_name: str,
     parent_world: np.ndarray,
     stage: Usd.Stage,
-    out_dir: Path,
 ) -> None:
+    import mujoco
+
     prim = scene.parts[part_name]
     world = _world_transform(prim)
     relative = np.linalg.inv(parent_world) @ world
-    placement = {"name": part_name, "pos": _vector(relative[:3, 3])}
+    body = parent.add_body(name=part_name, pos=relative[:3, 3])
     orientation = _quaternion(relative[:3, :3])
     if orientation is not None:
-        placement["quat"] = _vector(orientation)
-    body = ET.SubElement(parent_el, "body", placement)
+        body.quat = orientation
 
     joint = next((item for item in scene.tree_joints if item.child == part_name), None)
     if joint is None:
-        ET.SubElement(body, "freejoint")
+        body.add_freejoint()
     elif joint.kind is not None:
-        attributes = {
-            "name": joint.name,
-            "type": joint.kind,
-            "pos": _vector(joint.anchor),
-            "axis": _vector(joint.axis),
-        }
-        if joint.lower is not None and joint.upper is not None:
-            # UsdPhysics states revolute limits in degrees and prismatic limits in
-            # stage units. MJCF is written here in radians and metres.
-            scale = math.pi / 180.0 if joint.kind == "hinge" else 1.0
-            attributes["range"] = f"{joint.lower * scale:.6f} {joint.upper * scale:.6f}"
-            attributes["limited"] = "true"
-        ET.SubElement(body, "joint", attributes)
+        _add_joint(body, joint.name, joint.kind, joint.anchor, joint.axis, joint.lower, joint.upper)
         for index, (kind, axis, _parent_axis, low, high) in enumerate(joint.extra_axes, start=2):
-            extra = {
-                "name": f"{joint.name}_{index}",
-                "type": kind,
-                "pos": _vector(joint.anchor),
-                "axis": _vector(axis),
-            }
-            if low is not None and high is not None:
-                scale = math.pi / 180.0 if kind == "hinge" else 1.0
-                extra["range"] = f"{low * scale:.6f} {high * scale:.6f}"
-                extra["limited"] = "true"
-            ET.SubElement(body, "joint", extra)
+            _add_joint(body, f"{joint.name}_{index}", kind, joint.anchor, axis, low, high)
 
     mass_api = _MassAPI(prim)
     mass = _number(mass_api.GetMassAttr().Get())
     if mass:
-        ET.SubElement(
-            body,
-            "inertial",
-            pos=_vector(mass_api.GetCenterOfMassAttr().Get() or (0.0, 0.0, 0.0)),
-            mass=f"{mass:.6f}",
-            diaginertia=" ".join(
-                f"{max(float(value), 1e-9):.9f}"
-                for value in (mass_api.GetDiagonalInertiaAttr().Get() or (1e-4, 1e-4, 1e-4))
-            ),
-        )
+        body.explicitinertial = True
+        body.mass = mass
+        body.ipos = _triple(mass_api.GetCenterOfMassAttr().Get() or (0.0, 0.0, 0.0))
+        body.inertia = [
+            max(float(value), 1e-9)
+            for value in (mass_api.GetDiagonalInertiaAttr().Get() or (1e-4, 1e-4, 1e-4))
+        ]
+        principal = mass_api.GetPrincipalAxesAttr().Get()
+        if principal is not None:
+            # The MJCF text translator dropped this, silently simulating any
+            # part with rotated principal axes as if its inertia were axis
+            # aligned.
+            imaginary = principal.GetImaginary()
+            body.iquat = [float(principal.GetReal()), *(float(value) for value in imaginary)]
 
     shapes = prim.GetChild("shapes")
     for shape in shapes.GetChildren() if shapes else []:
         if not shape.HasAPI(_CollisionAPI):
             continue
         mesh_name = f"{part_name}_{shape.GetName()}"
-        _write_obj(out_dir / f"{mesh_name}.obj", *_mesh_arrays(shape))
-        ET.SubElement(asset, "mesh", name=mesh_name, file=f"{mesh_name}.obj")
-        geom: dict[str, str] = {"type": "mesh", "mesh": mesh_name, "name": mesh_name}
+        points, faces = _mesh_arrays(shape)
+        mesh = spec.add_mesh(name=mesh_name)
+        mesh.uservert = points.reshape(-1)
+        mesh.userface = faces.reshape(-1)
+        geom = body.add_geom(
+            name=mesh_name,
+            type=mujoco.mjtGeom.mjGEOM_MESH,  # pyright: ignore[reportAttributeAccessIssue]
+            meshname=mesh_name,
+        )
         friction = _contact_friction(shape, stage)
         if friction is not None:
-            geom["friction"] = f"{friction:.4f} 0.005 0.0001"
-        ET.SubElement(body, "geom", geom)
+            geom.friction = [friction, 0.005, 0.0001]
 
     for child in (item.child for item in scene.tree_joints if item.parent == part_name):
-        _add_body(body, asset, scene, child, world, stage, out_dir)
+        _add_body(spec, body, scene, child, world, stage)
+
+
+def _add_joint(
+    body: Any,
+    name: str,
+    kind: str,
+    anchor: tuple[float, float, float],
+    axis: tuple[float, float, float],
+    lower: float | None,
+    upper: float | None,
+) -> None:
+    import mujoco
+
+    joint = body.add_joint(
+        name=name,
+        type=mujoco.mjtJoint.mjJNT_HINGE if kind == "hinge" else mujoco.mjtJoint.mjJNT_SLIDE,
+        pos=anchor,
+        axis=axis,
+    )
+    if lower is not None and upper is not None:
+        # UsdPhysics states revolute limits in degrees and prismatic limits in
+        # stage units. The spec is built in radians and metres.
+        scale = math.pi / 180.0 if kind == "hinge" else 1.0
+        joint.range = [lower * scale, upper * scale]
 
 
 def _contact_friction(shape: Usd.Prim, stage: Usd.Stage) -> float | None:
@@ -892,12 +919,6 @@ def _mesh_arrays(prim: Usd.Prim) -> tuple[np.ndarray, np.ndarray]:
     return points, indices.reshape(-1, 3)
 
 
-def _write_obj(path: Path, points: np.ndarray, faces: np.ndarray) -> None:
-    lines = [f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in points]
-    lines += [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
 def _attr(prim: Usd.Prim, name: str, default: Any = None) -> Any:
     attribute = prim.GetAttribute(name)
     value = attribute.Get() if attribute else None
@@ -911,7 +932,3 @@ def _number(value: Any) -> float | None:
 def _triple(value: Any) -> tuple[float, float, float]:
     x, y, z = (float(component) for component in value)
     return (x, y, z)
-
-
-def _vector(value: Any) -> str:
-    return " ".join(f"{float(component):.6f}" for component in value)

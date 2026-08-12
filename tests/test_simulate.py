@@ -79,7 +79,7 @@ def test_revolute_limits_convert_from_degrees_to_radians(tmp_path: Path) -> None
     silently removes the limit rather than failing.
     """
     write_mjcf(_export(_hinged_box(), tmp_path), tmp_path / "sim")
-    joint = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//joint")
+    joint = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//joint[@name='lid_hinge']")
 
     assert joint is not None
     lower, upper = (float(value) for value in str(joint.get("range")).split())
@@ -95,7 +95,7 @@ def test_a_part_with_no_joint_gets_a_free_body(tmp_path: Path) -> None:
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
     root = ET.parse(tmp_path / "sim" / "model.xml").getroot()
 
-    assert root.find(".//freejoint") is not None
+    assert root.find(".//joint[@type='free']") is not None
 
 
 def test_contact_friction_reaches_the_geom(tmp_path: Path) -> None:
@@ -230,7 +230,7 @@ def test_each_joint_axis_survives_the_usd_to_mjcf_round_trip(
 ) -> None:
     model = _hinge_with_axis(axis)
     write_mjcf(_export(model, tmp_path), tmp_path / "sim")
-    joint = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//joint")
+    joint = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//joint[@name='lid_hinge']")
 
     assert joint is not None
     actual = tuple(float(value) for value in str(joint.get("axis")).split())
@@ -329,10 +329,42 @@ def test_a_multi_dof_joint_becomes_one_mjcf_joint_per_free_axis(tmp_path) -> Non
 
     result = export_assembly(assembly, tmp_path / "out")
     model = write_mjcf(result.usdz, tmp_path / "work")
-    text = model.read_text()
+    root = ET.parse(model).getroot()
 
-    assert text.count('type="hinge"') == 3
-    assert 'name="socket"' in text and 'name="socket_2"' in text and 'name="socket_3"' in text
+    # A hinge is MJCF's default joint type, so the writer omits it.
+    hinges = [joint for joint in root.iter("joint") if joint.get("type") in (None, "hinge")]
+    assert [joint.get("name") for joint in hinges] == ["socket", "socket_2", "socket_3"]
+
+
+def test_principal_axes_reach_the_inertial_frame(tmp_path: Path) -> None:
+    """USD authors diagonal inertia in the principal-axes frame; MuJoCo must too.
+
+    Dropping the quaternion simulates a part with rotated principal axes as if
+    its inertia were axis aligned.
+    """
+
+    from articraft.sdk.mass import MassProperties
+
+    half = math.sqrt(0.5)
+    model = RigidBodyAssembly("gyro")
+    model.rigid_body(
+        "body",
+        mass_properties=MassProperties(
+            mass=2.0,
+            diagonal_inertia=(0.02, 0.01, 0.01),
+            principal_axes=(half, 0.0, 0.0, half),  # 90 degrees about Z
+        ),
+    ).add(BoxGeometry((0.1, 0.1, 0.1)), name="cube", material=Material.STEEL)
+
+    write_mjcf(_export(model, tmp_path), tmp_path / "sim")
+    inertial = ET.parse(tmp_path / "sim" / "model.xml").getroot().find(".//body/inertial")
+
+    assert inertial is not None
+    quaternion = inertial.get("quat")
+    assert quaternion is not None, "rotated principal axes must carry their orientation"
+    w, _, _, z = (float(value) for value in quaternion.split())
+    assert abs(w) == pytest.approx(half, abs=1e-4)
+    assert abs(z) == pytest.approx(half, abs=1e-4)
 
 
 def test_a_joint_authored_child_first_still_nests_under_the_root(tmp_path: Path) -> None:

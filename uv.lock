@@ -141,7 +141,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.11.0" },
 ]
-sim = [{ name = "mujoco", specifier = ">=3.2" }]
+sim = [{ name = "mujoco", specifier = ">=3.3" }]
 
 [[package]]
 name = "asttokens"
