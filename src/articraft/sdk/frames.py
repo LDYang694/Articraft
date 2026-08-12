@@ -85,9 +85,9 @@ def _as_joint_frame(source: FrameSource) -> JointFrame:
     if isinstance(source, Location):
         return _location_frame(source)
     if isinstance(source, Face):
-        return _location_frame(Plane(origin=source.center(), z_dir=source.normal_at()).location)
+        return _location_frame(_face_location(source))
     if isinstance(source, Edge):
-        return _location_frame(Axis(source.center(), source.tangent_at()).location)
+        return _location_frame(_edge_location(source))
     if isinstance(source, Vertex):
         return JointFrame(xyz=_vec3(source.center(), field_name="vertex center"))
     if isinstance(source, Shape):
@@ -102,6 +102,39 @@ def _as_joint_frame(source: FrameSource) -> JointFrame:
         center = (vertices.min(axis=0) + vertices.max(axis=0)) * 0.5
         return JointFrame(xyz=_vec3(center, field_name="mesh bounds center"))
     return JointFrame(xyz=_vec3(source, field_name="body frame point"))
+
+
+def _face_location(face: Face) -> Location:
+    """The frame a face means when it anchors a joint.
+
+    A rotational surface -- a bore, a pin, a cone seat -- means its axis of
+    symmetry, not the outward normal at some surface point: a hinge anchored
+    to a cylindrical face should spin about the cylinder, so local Z becomes
+    the rotation axis, positioned where the face sits along it. A flat face
+    keeps its center and normal.
+    """
+
+    rotation_axis = face.axis_of_rotation
+    if rotation_axis is None:
+        return Plane(origin=face.center(), z_dir=face.normal_at()).location
+    direction = Vector(rotation_axis.direction).normalized()
+    offset = Vector(face.center()) - Vector(rotation_axis.position)
+    origin = Vector(rotation_axis.position) + direction * offset.dot(direction)
+    return Axis(origin, direction).location
+
+
+def _edge_location(edge: Edge) -> Location:
+    """The frame an edge means when it anchors a joint.
+
+    A circle or an arc -- a hole rim, a fillet edge -- means the axis through
+    its center, normal to its plane; the on-curve tangent it would otherwise
+    yield is never the hinge a rim is selected for. A straight or freeform
+    edge keeps its midpoint and tangent.
+    """
+
+    if str(edge.geom_type).rsplit(".", 1)[-1] in {"CIRCLE", "ELLIPSE"}:
+        return Axis(edge.arc_center, edge.normal()).location
+    return Axis(edge.center(), edge.tangent_at()).location
 
 
 def _location_frame(location: Location) -> JointFrame:

@@ -193,7 +193,12 @@ class PhysicsState:
         source: BodyFrame,
         body: RigidBody | _WorldEndpoint = WORLD,
     ) -> BodyFrame:
-        """Express one body-bound frame in another body's coordinates."""
+        """Express one body-bound frame in another body's coordinates.
+
+        A state stores poses by body *name*, so bodies here resolve by name
+        alone. ``RigidBodyAssembly.frame_in`` additionally checks identity;
+        prefer it while authoring.
+        """
 
         source_world = self._body_matrix(source.body) @ _frame_matrix(source.frame)
         local = np.linalg.inv(self._body_matrix(body)) @ source_world
@@ -471,7 +476,15 @@ class RigidBodyAssembly:
             resolved_body = self.get_rigid_body(cast(RigidBody, body))
             if resolved_body is not body:
                 raise ValidationError("target body belongs to another assembly")
-        return self.resolve().reference_state.frame_in(source, body)
+        try:
+            reference = self.resolve().reference_state
+        except ValidationError as exc:
+            raise ValidationError(
+                "frame_in reads the assembly's reference state, so the bodies and "
+                "joints that place both frames must be authored first; "
+                f"resolving failed: {exc}"
+            ) from exc
+        return reference.frame_in(source, body)
 
     def articulation(
         self,

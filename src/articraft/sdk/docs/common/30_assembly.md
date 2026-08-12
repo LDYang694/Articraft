@@ -94,9 +94,13 @@ body.at(source=None) -> BodyFrame
 
 `body.at(...)` binds a local frame to that body. `source` may be a three-number
 point, `JointFrame`, build123d `Location`, `Plane`, `Axis`, `Face`, `Edge`,
-`Vertex`, or `Shape`, or a `MeshGeometry`. Faces use their center and normal;
-edges use their center and tangent; axes use their position and direction. The
-feature direction becomes frame-local Z. Whole shapes and meshes use their
+`Vertex`, or `Shape`, or a `MeshGeometry`. The feature direction becomes
+frame-local Z. Flat faces use their center and normal; rotational faces --
+cylinders, cones, spheres, tori -- use their axis of symmetry, positioned where
+the face sits along it, so a bore or pin surface anchors the hinge that spins
+about it. Straight and freeform edges use their midpoint and tangent; circles,
+arcs, and ellipses use the axis through their center, normal to their plane.
+Axes use their position and direction. Whole shapes and meshes use their
 bounding-box center. Build123d locations are converted from their exact
 transform, including their degree-based rotation convention.
 

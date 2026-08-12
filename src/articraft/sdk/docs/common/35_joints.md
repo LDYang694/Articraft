@@ -23,9 +23,11 @@ pitch, and yaw in radians.
 
 Normally create a `BodyFrame` with `body.at(...)` or `WORLD.at(...)`. This binds
 the local `JointFrame` to its endpoint before the joint is authored. Points and
-build123d locations, planes, axes, faces, edges, and vertices are accepted. An
-axis direction, face normal, or edge tangent becomes frame-local Z; use
-`ROT_Z` or `TRANS_Z` to move along that selected feature.
+build123d locations, planes, axes, faces, edges, and vertices are accepted. The
+feature's natural axis becomes frame-local Z: an axis direction, a flat face's
+normal, a straight edge's tangent -- and for round features, the axis of
+symmetry, so a cylindrical face or a hole's rim circle anchors the hinge that
+spins about it. Use `ROT_Z` or `TRANS_Z` to move along the selected feature.
 
 Rotating a frame expresses an axis that is not aligned with the body's axes. To
 hinge about a diagonal in the XY plane, yaw the frame and use its local X axis.

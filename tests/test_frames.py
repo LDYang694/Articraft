@@ -156,3 +156,42 @@ def test_context_checks_frame_coincidence_and_axis_alignment() -> None:
     failures = context.report().failures
     assert "position_error=1" in failures[0].details
     assert "radial_error=1" in failures[1].details
+
+
+def test_round_features_anchor_their_axis_of_symmetry() -> None:
+    """A bore, pin, or rim means the axis it spins about, not a surface point."""
+
+    import math
+
+    from build123d import Cylinder, Rot
+
+    model = RigidBodyAssembly("round_anchors")
+    body = model.rigid_body("body")
+    pin = Pos(1.0, 2.0, 3.0) * Rot(0.0, 30.0, 0.0) * Cylinder(0.01, 0.05)
+    body.add(pin, name="pin")
+    direction = np.array([math.sin(math.radians(30.0)), 0.0, math.cos(math.radians(30.0))])
+
+    lateral = next(f for f in pin.faces() if "CYLINDER" in str(f.geom_type).upper())
+    frame = _frame_matrix(body.at(lateral).frame)
+    assert abs(abs(float(frame[:3, 2] @ direction)) - 1.0) < 1e-9
+    radial = (frame[:3, 3] - (1.0, 2.0, 3.0)) - (
+        (frame[:3, 3] - (1.0, 2.0, 3.0)) @ direction
+    ) * direction
+    assert np.linalg.norm(radial) < 1e-9
+
+    top = pin.faces().sort_by(Axis((1.0, 2.0, 3.0), tuple(direction)))[-1]
+    rim = top.edges()[0]
+    rim_frame = _frame_matrix(body.at(rim).frame)
+    assert abs(abs(float(rim_frame[:3, 2] @ direction)) - 1.0) < 1e-9
+    assert np.allclose(rim_frame[:3, 3], np.array([1.0, 2.0, 3.0]) + 0.025 * direction)
+
+
+def test_frame_in_before_the_graph_connects_names_the_precondition() -> None:
+    model = RigidBodyAssembly("early")
+    first = model.rigid_body("first")
+    first.add(Box(1.0, 1.0, 1.0), name="shape")
+    second = model.rigid_body("second")
+    second.add(Box(1.0, 1.0, 1.0), name="shape")
+
+    with pytest.raises(ValidationError, match="authored first"):
+        model.frame_in(first.at(), second)

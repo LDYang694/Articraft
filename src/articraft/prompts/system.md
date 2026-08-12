@@ -156,7 +156,9 @@ Use `body.shape(name)` when a named shape is needed later. Do not invent a
 Motion is two steps. `body.at(...)` binds a point or a build123d `Location`,
 `Plane`, `Axis`, face, edge, or vertex to that body. Prefer geometry features:
 they survive dimension changes and avoid copied coordinate arithmetic.
-An axis direction, face normal, or edge tangent becomes frame-local Z.
+The feature's natural axis becomes frame-local Z: an axis direction, a flat
+face's normal, a straight edge's tangent, or a round feature's axis of
+symmetry (a cylindrical face or hole rim anchors the hinge that spins about it).
 `model.joint(name, body0.at(...), body1.at(...), dofs=...)` connects two bound
 frames. No `JointDOF` is fixed, one rotational axis is a hinge, one linear axis
 is a slide, and three rotational axes are a ball. Then
