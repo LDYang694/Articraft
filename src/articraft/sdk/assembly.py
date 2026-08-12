@@ -8,12 +8,12 @@ from types import MappingProxyType
 from typing import TypeAlias, cast
 
 import numpy as np
-import trimesh
+from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
 from articraft.sdk.errors import LoopClosureError, ValidationError
-from articraft.sdk.frames import WORLD, BodyFrame, JointFrame, _WorldEndpoint
+from articraft.sdk.frames import WORLD, BodyFrame, JointFrame, _matrix_rpy, _WorldEndpoint
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.physics import BodyState, PhysicsScene
 
@@ -1077,7 +1077,7 @@ def _rotation_values(joint: Joint, relative: Mat4) -> dict[JointAxis, float]:
     ]
     rotation = np.asarray(relative[:3, :3], dtype=np.float64)
     if len(free) > 1:
-        angles = trimesh.transformations.euler_from_matrix(relative, axes="sxyz")
+        angles = _matrix_rpy(rotation)
         return {
             JointAxis.ROT_X: float(angles[0]),
             JointAxis.ROT_Y: float(angles[1]),
@@ -1094,13 +1094,7 @@ def _rotation_values(joint: Joint, relative: Mat4) -> dict[JointAxis, float]:
         cosine = float(np.trace(rotation) - direction @ rotation @ direction) * 0.5
         angle = math.atan2(sine, cosine)
         values[free[0]] = angle
-        rotation = (
-            np.asarray(
-                trimesh.transformations.rotation_matrix(-angle, direction),
-                dtype=np.float64,
-            )[:3, :3]
-            @ rotation
-        )
+        rotation = Rotation.from_rotvec(-angle * direction).as_matrix() @ rotation
     leftover = _rotation_vector(rotation)
     for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z):
         if axis not in free:
@@ -1111,17 +1105,7 @@ def _rotation_values(joint: Joint, relative: Mat4) -> dict[JointAxis, float]:
 def _rotation_vector(rotation: np.ndarray) -> np.ndarray:
     """The axis-angle vector of a rotation matrix; zero for the identity."""
 
-    embedded = np.identity(4, dtype=np.float64)
-    embedded[:3, :3] = rotation
-    quaternion = trimesh.transformations.quaternion_from_matrix(embedded)
-    vector = np.asarray(quaternion[1:], dtype=np.float64)
-    length = float(np.linalg.norm(vector))
-    if length < 1e-12:
-        return np.zeros(3, dtype=np.float64)
-    angle = 2.0 * math.atan2(length, float(quaternion[0]))
-    if angle > math.pi:
-        angle -= 2.0 * math.pi
-    return vector * (angle / length)
+    return Rotation.from_matrix(rotation).as_rotvec()
 
 
 def _motion_matrix(joint: Joint, positions: Mapping[str, float]) -> Mat4:
@@ -1135,16 +1119,15 @@ def _motion_matrix(joint: Joint, positions: Mapping[str, float]) -> Mat4:
         else:
             translation[axis.component] = value
     matrix = np.identity(4, dtype=np.float64)
-    matrix[:3, 3] = translation
-    return matrix @ np.asarray(
-        trimesh.transformations.euler_matrix(*rotation, axes="sxyz"), dtype=np.float64
-    )
+    matrix[:3, :3] = Rotation.from_euler("xyz", rotation).as_matrix()
+    motion = np.identity(4, dtype=np.float64)
+    motion[:3, 3] = translation
+    return motion @ matrix
 
 
 def _frame_matrix(frame: JointFrame) -> Mat4:
-    matrix = np.asarray(
-        trimesh.transformations.euler_matrix(*frame.rpy, axes="sxyz"), dtype=np.float64
-    )
+    matrix = np.identity(4, dtype=np.float64)
+    matrix[:3, :3] = Rotation.from_euler("xyz", frame.rpy).as_matrix()
     matrix[:3, 3] = np.asarray(frame.xyz, dtype=np.float64)
     return matrix
 
@@ -1245,7 +1228,7 @@ def _matrix_tuple(matrix: Mat4) -> Matrix4:
 
 
 def _matrix_frame(matrix: Mat4) -> JointFrame:
-    rpy = trimesh.transformations.euler_from_matrix(matrix, axes="sxyz")
+    rpy = _matrix_rpy(np.asarray(matrix)[:3, :3])
     return JointFrame(
         xyz=(float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])),
         rpy=(float(rpy[0]), float(rpy[1]), float(rpy[2])),

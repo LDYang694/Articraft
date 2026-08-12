@@ -5,6 +5,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypedDict, Unpack
 
+import numpy as np
+from scipy.interpolate import BPoly, CubicHermiteSpline  # pyright: ignore[reportMissingTypeStubs]
+from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
+
 from articraft.sdk._mesh.core import (
     _EPS,
     LoftGeometry,
@@ -12,10 +16,7 @@ from articraft.sdk._mesh.core import (
     Vec2,
     Vec3,
     _v_add,
-    _v_dot,
     _v_norm,
-    _v_normalize,
-    _v_scale,
     _v_sub,
     _vec3,
 )
@@ -30,21 +31,16 @@ def _sample_cubic_bezier(
     if len(points) < 4 or (len(points) - 1) % 3:
         raise ValueError("Bezier control points must contain 3n + 1 points")
     steps = max(2, int(samples_per_segment))
-    result: list[tuple[float, ...]] = []
-    for segment in range((len(points) - 1) // 3):
-        p0, p1, p2, p3 = points[segment * 3 : segment * 3 + 4]
-        for index in range(steps):
-            amount = index / steps
-            inverse = 1.0 - amount
-            result.append(
-                tuple(
-                    inverse**3 * p0[axis]
-                    + 3.0 * inverse**2 * amount * p1[axis]
-                    + 3.0 * inverse * amount**2 * p2[axis]
-                    + amount**3 * p3[axis]
-                    for axis in range(dimensions)
-                )
-            )
+    segments = (len(points) - 1) // 3
+    array = np.asarray(points, dtype=np.float64)
+    # Bezier control points are Bernstein coefficients, which is BPoly's
+    # native representation: coefficient k of segment s is control point 3s+k.
+    spline = BPoly(
+        np.stack([array[k : k + 3 * segments : 3] for k in range(4)]),
+        np.arange(segments + 1, dtype=np.float64),
+    )
+    samples = np.arange(segments * steps, dtype=np.float64) / steps
+    result = [tuple(float(value) for value in row) for row in spline(samples)]
     result.append(points[-1])
     return result
 
@@ -75,43 +71,6 @@ def _tuple_distance(a: Sequence[float], b: Sequence[float]) -> float:
     return math.sqrt(sum((left - right) ** 2 for left, right in zip(a, b, strict=True)))
 
 
-def _catmull_interpolate(
-    a: Sequence[float], b: Sequence[float], ta: float, tb: float, value: float
-) -> tuple[float, ...]:
-    if abs(tb - ta) <= _EPS:
-        return tuple(a)
-    amount = (value - ta) / (tb - ta)
-    return tuple(left + (right - left) * amount for left, right in zip(a, b, strict=True))
-
-
-def _catmull_segment(
-    p0: Sequence[float],
-    p1: Sequence[float],
-    p2: Sequence[float],
-    p3: Sequence[float],
-    *,
-    steps: int,
-    alpha: float,
-) -> list[tuple[float, ...]]:
-    def advance(value: float, a: Sequence[float], b: Sequence[float]) -> float:
-        return value + max(_tuple_distance(a, b), _EPS) ** alpha
-
-    t0 = 0.0
-    t1 = advance(t0, p0, p1)
-    t2 = advance(t1, p1, p2)
-    t3 = advance(t2, p2, p3)
-    result: list[tuple[float, ...]] = []
-    for index in range(steps):
-        value = t1 + (t2 - t1) * index / steps
-        a1 = _catmull_interpolate(p0, p1, t0, t1, value)
-        a2 = _catmull_interpolate(p1, p2, t1, t2, value)
-        a3 = _catmull_interpolate(p2, p3, t2, t3, value)
-        b1 = _catmull_interpolate(a1, a2, t0, t2, value)
-        b2 = _catmull_interpolate(a2, a3, t1, t3, value)
-        result.append(_catmull_interpolate(b1, b2, t1, t2, value))
-    return result
-
-
 def _sample_catmull_rom(
     points: Sequence[Sequence[float]],
     *,
@@ -137,44 +96,35 @@ def _sample_catmull_rom(
             deduplicated.pop()
         if len(deduplicated) < 3:
             raise ValueError("closed Catmull-Rom spline requires at least three points")
-        result: list[tuple[float, ...]] = []
-        for index in range(len(deduplicated)):
-            result.extend(
-                _catmull_segment(
-                    deduplicated[(index - 1) % len(deduplicated)],
-                    deduplicated[index],
-                    deduplicated[(index + 1) % len(deduplicated)],
-                    deduplicated[(index + 2) % len(deduplicated)],
-                    steps=steps,
-                    alpha=alpha,
-                )
-            )
-        result.append(result[0])
-        return result
-    if len(deduplicated) == 2:
-        return [
-            tuple(
-                start + (end - start) * index / steps
-                for start, end in zip(deduplicated[0], deduplicated[1], strict=True)
-            )
-            for index in range(steps + 1)
-        ]
-    first = tuple(2.0 * a - b for a, b in zip(deduplicated[0], deduplicated[1], strict=True))
-    last = tuple(2.0 * a - b for a, b in zip(deduplicated[-1], deduplicated[-2], strict=True))
-    extended = [first, *deduplicated, last]
-    result = []
-    for index in range(len(deduplicated) - 1):
-        result.extend(
-            _catmull_segment(
-                extended[index],
-                extended[index + 1],
-                extended[index + 2],
-                extended[index + 3],
-                steps=steps,
-                alpha=alpha,
-            )
-        )
-    result.append(deduplicated[-1])
+        core = np.asarray(deduplicated, dtype=np.float64)
+        # Wrap-around context: one phantom point behind, two ahead, so every
+        # real segment has the neighbors the tangent formula reads.
+        extended = np.vstack([core[-1], core, core[:2]])
+        segment_count = len(core)
+    else:
+        core = np.asarray(deduplicated, dtype=np.float64)
+        if len(core) == 2:
+            amounts = np.arange(steps + 1, dtype=np.float64)[:, None] / steps
+            values = core[0] + (core[1] - core[0]) * amounts
+            return [tuple(float(value) for value in row) for row in values]
+        # Reflected phantom endpoints keep the authored end tangents.
+        extended = np.vstack([2.0 * core[0] - core[1], core, 2.0 * core[-1] - core[-2]])
+        segment_count = len(core) - 1
+
+    gaps = np.maximum(np.linalg.norm(np.diff(extended, axis=0), axis=1), _EPS) ** alpha
+    knots = np.concatenate([[0.0], np.cumsum(gaps)])
+    # The Barry-Goldman pyramid on knots (t0..t3) is the unique cubic through
+    # P1 and P2 with these endpoint derivatives, so a Hermite spline with the
+    # non-uniform Catmull-Rom tangents reproduces it exactly.
+    spans = np.diff(extended, axis=0) / np.diff(knots)[:, None]
+    central = (extended[2:] - extended[:-2]) / (knots[2:] - knots[:-2])[:, None]
+    tangents = spans[:-1] + spans[1:] - central
+    spline = CubicHermiteSpline(knots[1:-1], extended[1:-1], tangents)
+    starts = knots[1 : 1 + segment_count, None]
+    ends = knots[2 : 2 + segment_count, None]
+    samples = (starts + (ends - starts) * np.arange(steps) / steps).reshape(-1)
+    result = [tuple(float(value) for value in row) for row in spline(samples)]
+    result.append(result[0] if closed else deduplicated[-1])
     return result
 
 
@@ -224,33 +174,22 @@ def sample_arc_3d(
     angle: float,
     segments: int = 16,
 ) -> list[Vec3]:
-    start: Vec3 = (float(start_point[0]), float(start_point[1]), float(start_point[2]))
-    center = (float(center[0]), float(center[1]), float(center[2]))
-    axis = _v_normalize((float(normal[0]), float(normal[1]), float(normal[2])))
-    relative = _v_sub(start, center)
-    if _v_norm(relative) <= _EPS:
+    origin = np.asarray(center, dtype=np.float64)
+    axis = np.asarray(normal, dtype=np.float64)
+    length = float(np.linalg.norm(axis))
+    if length <= _EPS:
+        raise ValueError("arc normal must be non-zero")
+    axis /= length
+    relative = np.asarray(start_point, dtype=np.float64) - origin
+    radius = float(np.linalg.norm(relative))
+    if radius <= _EPS:
         raise ValueError("arc start_point must differ from center")
-    if abs(_v_dot(_v_normalize(relative), axis)) > 1.0 - 1e-6:
+    if abs(float(relative @ axis)) / radius > 1.0 - 1e-6:
         raise ValueError("arc radius must not be collinear with its normal")
-    result: list[Vec3] = []
-    for index in range(max(2, int(segments)) + 1):
-        local_angle = float(angle) * index / max(2, int(segments))
-        rotated = _v_add(
-            _v_add(
-                _v_scale(relative, math.cos(local_angle)),
-                _v_scale(
-                    (
-                        axis[1] * relative[2] - axis[2] * relative[1],
-                        axis[2] * relative[0] - axis[0] * relative[2],
-                        axis[0] * relative[1] - axis[1] * relative[0],
-                    ),
-                    math.sin(local_angle),
-                ),
-            ),
-            _v_scale(axis, _v_dot(axis, relative) * (1.0 - math.cos(local_angle))),
-        )
-        result.append(_v_add(center, rotated))
-    return result
+    count = max(2, int(segments))
+    angles = float(angle) * np.arange(count + 1, dtype=np.float64) / count
+    points = origin + Rotation.from_rotvec(np.outer(angles, axis)).apply(relative)
+    return [(float(x), float(y), float(z)) for x, y, z in points]
 
 
 @dataclass

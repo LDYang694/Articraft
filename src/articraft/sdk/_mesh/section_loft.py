@@ -155,37 +155,21 @@ def _coerce_spec(
 def _resample_loop(points: Sequence[Vec3], count: int) -> list[Vec3]:
     if len(points) == count:
         return list(points)
-    closed = [*points, points[0]]
-    lengths = [0.0]
-    for start, end in pairwise(closed):
-        lengths.append(lengths[-1] + float(np.linalg.norm(np.subtract(end, start))))
-    total = lengths[-1]
+    array = np.asarray(points, dtype=np.float64)
+    ring = np.vstack((array, array[:1]))
+    lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ring, axis=0), axis=1))])
+    total = float(lengths[-1])
     if total <= 1e-12:
         raise ValidationError("loft section perimeter must be non-zero")
-    result: list[Vec3] = []
-    edge = 0
-    for index in range(count):
-        target = total * index / count
-        while edge + 1 < len(lengths) and lengths[edge + 1] < target:
-            edge += 1
-        span = lengths[edge + 1] - lengths[edge]
-        amount = 0.0 if span <= 1e-12 else (target - lengths[edge]) / span
-        start, end = closed[edge], closed[edge + 1]
-        result.append(
-            (
-                start[0] + (end[0] - start[0]) * amount,
-                start[1] + (end[1] - start[1]) * amount,
-                start[2] + (end[2] - start[2]) * amount,
-            )
-        )
-    return result
+    targets = total * np.arange(count, dtype=np.float64) / count
+    columns = [np.interp(targets, lengths, ring[:, axis]) for axis in range(3)]
+    return [(float(x), float(y), float(z)) for x, y, z in zip(*columns, strict=True)]
 
 
 def _loop_normal(points: Sequence[Vec3]) -> np.ndarray:
-    center = np.mean(np.asarray(points, dtype=np.float64), axis=0)
-    normal = np.zeros(3, dtype=np.float64)
-    for start, end in pairwise([*points, points[0]]):
-        normal += np.cross(np.subtract(start, center), np.subtract(end, center))
+    centered = np.asarray(points, dtype=np.float64)
+    centered = centered - centered.mean(axis=0)
+    normal = np.cross(centered, np.roll(centered, -1, axis=0)).sum(axis=0)
     length = float(np.linalg.norm(normal))
     if length <= 1e-12:
         raise ValidationError("loft section must enclose a non-zero planar area")
@@ -208,20 +192,13 @@ def _align_loop(reference: Sequence[Vec3], candidate: Sequence[Vec3]) -> list[Ve
 
 
 def _sample_polyline(points: Sequence[Vec3], amount: float) -> Vec3:
-    lengths = [0.0]
-    for start, end in pairwise(points):
-        lengths.append(lengths[-1] + float(np.linalg.norm(np.subtract(end, start))))
-    target = lengths[-1] * amount
-    index = 0
-    while index + 1 < len(lengths) and lengths[index + 1] < target:
-        index += 1
-    span = lengths[index + 1] - lengths[index]
-    local = 0.0 if span <= 1e-12 else (target - lengths[index]) / span
-    start, end = points[index], points[index + 1]
+    array = np.asarray(points, dtype=np.float64)
+    lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(array, axis=0), axis=1))])
+    target = float(lengths[-1]) * amount
     return (
-        start[0] + (end[0] - start[0]) * local,
-        start[1] + (end[1] - start[1]) * local,
-        start[2] + (end[2] - start[2]) * local,
+        float(np.interp(target, lengths, array[:, 0])),
+        float(np.interp(target, lengths, array[:, 1])),
+        float(np.interp(target, lengths, array[:, 2])),
     )
 
 

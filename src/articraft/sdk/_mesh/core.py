@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, SupportsIndex, TypeAlias, cast
 
 import numpy as np
 import trimesh
+from scipy.interpolate import CubicHermiteSpline  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk.errors import ValidationError
 
@@ -963,47 +964,39 @@ class LatheGeometry(MeshGeometry):
         super().__init__(converted.vertices, converted.faces)
 
 
-def _interpolate_loft_point(
-    p0: Vec3,
-    p1: Vec3,
-    p2: Vec3,
-    p3: Vec3,
-    amount: float,
+def _interpolate_loft_span(
+    p0: Sequence[Vec3],
+    p1: Sequence[Vec3],
+    p2: Sequence[Vec3],
+    p3: Sequence[Vec3],
+    amounts: np.ndarray,
     *,
     interpolation: str,
     parameters: tuple[float, float, float, float],
     tension: float,
-) -> Vec3:
-    if interpolation == "linear":
-        return _v_lerp(p1, p2, amount)
+) -> list[list[Vec3]]:
+    """Rings between ``p1`` and ``p2``, one per sample amount.
+
+    The smooth mode is a cardinal (tension-scaled Catmull-Rom) segment; scipy
+    evaluates the same Hermite cubic from the ring values and end derivatives.
+    """
+
+    start = np.asarray(p1, dtype=np.float64)
+    end = np.asarray(p2, dtype=np.float64)
     t0, t1, t2, t3 = parameters
-    first_span = t2 - t0
-    second_span = t3 - t1
-    span = t2 - t1
-    if min(first_span, second_span, span) <= _EPS:
-        return _v_lerp(p1, p2, amount)
-    slope_scale = 1.0 - tension
-    first_derivative = _v_scale(_v_sub(p2, p0), slope_scale / first_span)
-    second_derivative = _v_scale(_v_sub(p3, p1), slope_scale / second_span)
-    amount2, amount3 = amount * amount, amount * amount * amount
-    h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0
-    h10 = amount3 - 2.0 * amount2 + amount
-    h01 = -2.0 * amount3 + 3.0 * amount2
-    h11 = amount3 - amount2
-    return (
-        h00 * p1[0]
-        + h10 * span * first_derivative[0]
-        + h01 * p2[0]
-        + h11 * span * second_derivative[0],
-        h00 * p1[1]
-        + h10 * span * first_derivative[1]
-        + h01 * p2[1]
-        + h11 * span * second_derivative[1],
-        h00 * p1[2]
-        + h10 * span * first_derivative[2]
-        + h01 * p2[2]
-        + h11 * span * second_derivative[2],
-    )
+    if interpolation == "linear" or min(t2 - t0, t3 - t1, t2 - t1) <= _EPS:
+        rings = start + (end - start) * amounts[:, None, None]
+    else:
+        slope_scale = 1.0 - tension
+        first_derivative = slope_scale * (end - np.asarray(p0, dtype=np.float64)) / (t2 - t0)
+        second_derivative = slope_scale * (np.asarray(p3, dtype=np.float64) - start) / (t3 - t1)
+        spline = CubicHermiteSpline(
+            np.asarray((t1, t2)),
+            np.stack((start, end)),
+            np.stack((first_derivative, second_derivative)),
+        )
+        rings = spline(t1 + (t2 - t1) * amounts)
+    return [[(float(x), float(y), float(z)) for x, y, z in ring] for ring in rings]
 
 
 def _loft_parameter_step(start: Vec3, end: Vec3, parameterization: str) -> float:
@@ -1077,23 +1070,18 @@ def _interpolate_loft_rings(
                 ]
             )
             t3 = parameters[span + 2] if span + 2 < len(rings) else 2.0 * t2 - t1
-        for sample in range(samples):
-            amount = sample / samples
-            result.append(
-                [
-                    _interpolate_loft_point(
-                        a,
-                        b,
-                        c,
-                        d,
-                        amount,
-                        interpolation=interpolation,
-                        parameters=(t0, t1, t2, t3),
-                        tension=tension,
-                    )
-                    for a, b, c, d in zip(p0, p1, p2, p3, strict=True)
-                ]
+        result.extend(
+            _interpolate_loft_span(
+                p0,
+                p1,
+                p2,
+                p3,
+                np.arange(samples, dtype=np.float64) / samples,
+                interpolation=interpolation,
+                parameters=(t0, t1, t2, t3),
+                tension=tension,
             )
+        )
     if not close_path:
         result.append(list(rings[-1]))
     return result

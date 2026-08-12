@@ -866,18 +866,23 @@ def _normal_data(mesh, crease_angle: float) -> tuple[np.ndarray, str]:
     vertex_faces = np.asarray(mesh.vertex_faces, dtype=np.int64)
     face_areas = np.asarray(mesh.area_faces, dtype=np.float64)
     cosine = math.cos(crease_angle)
-    corner_normals = np.empty((len(faces), 3, 3), dtype=np.float64)
-    for face_index, face in enumerate(faces):
-        reference = face_normals[face_index]
-        for corner_index, vertex_index in enumerate(face):
-            adjacent = vertex_faces[vertex_index]
-            adjacent = adjacent[adjacent >= 0]
-            aligned = adjacent[(face_normals[adjacent] @ reference) >= cosine]
-            weighted = (face_normals[aligned] * face_areas[aligned, None]).sum(axis=0)
-            length = float(np.linalg.norm(weighted))
-            corner_normals[face_index, corner_index] = (
-                reference if length <= 1e-14 else weighted / length
-            )
+    # Every corner's candidate faces at once: (face, corner, neighbor), with
+    # trimesh's -1 padding masked out. A corner averages the area-weighted
+    # normals of the neighbors within the crease angle of its own face.
+    adjacent = vertex_faces[faces]
+    valid = adjacent >= 0
+    safe = np.where(valid, adjacent, 0)
+    neighbor_normals = face_normals[safe]
+    aligned = valid & (np.einsum("fcnj,fj->fcn", neighbor_normals, face_normals) >= cosine)
+    weights = np.where(aligned, face_areas[safe], 0.0)
+    corner_normals = np.einsum("fcnj,fcn->fcj", neighbor_normals, weights)
+    lengths = np.linalg.norm(corner_normals, axis=2)
+    flat = lengths <= 1e-14
+    corner_normals = np.where(
+        flat[..., None],
+        np.broadcast_to(face_normals[:, None, :], corner_normals.shape),
+        corner_normals / np.where(flat, 1.0, lengths)[..., None],
+    )
     return corner_normals.reshape((-1, 3)).astype(np.float32), UsdGeom.Tokens.faceVarying
 
 
@@ -1007,8 +1012,8 @@ def _quat(matrix: Gf.Matrix4d) -> Gf.Quatf:
 
 
 def _gf_matrix(matrix) -> Gf.Matrix4d:
-    rows = tuple(tuple(float(matrix[column, row]) for column in range(4)) for row in range(4))
-    return Gf.Matrix4d(rows)
+    # Transposed because Gf matrices act on row vectors.
+    return Gf.Matrix4d(np.asarray(matrix, dtype=np.float64).T.tolist())
 
 
 def _safe_name_map(names: Iterable[str]) -> dict[str, str]:
@@ -1122,20 +1127,10 @@ def _audit_assembly_usdz(
         if points is None or faces is None:
             raise RuntimeError(f"USDZ audit found an empty mesh at {prim.GetPath()}")
         triangle_count += len(faces) // 3
-        matrix = cache.GetLocalToWorldTransform(prim)
-        exported_points.append(
-            np.asarray(
-                [
-                    tuple(
-                        matrix.Transform(
-                            Gf.Vec3d(float(point[0]), float(point[1]), float(point[2]))
-                        )
-                    )
-                    for point in points
-                ],
-                dtype=np.float64,
-            )
-        )
+        # Gf matrices act on row vectors, so points transform as p @ M.
+        matrix = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=np.float64)
+        local_points = np.asarray(points, dtype=np.float64)
+        exported_points.append(local_points @ matrix[:3, :3] + matrix[3, :3])
         normals = mesh.GetNormalsAttr().Get()
         if normals is None or len(normals) == 0:
             raise RuntimeError(f"USDZ audit found a mesh without normals at {prim.GetPath()}")
