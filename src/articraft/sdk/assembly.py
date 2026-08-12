@@ -758,6 +758,10 @@ def _propagate_transforms(
 
 
 _LOOP_STEPS = 5
+# The acceptance gate, equal to validate_state's per-axis tolerance so a
+# solve is accepted exactly when validation would pass it. The Newton loop
+# itself polishes two decades further so accepted solves clear the gate
+# with margin rather than landing on it.
 _LOOP_TOLERANCE = 1e-6
 
 
@@ -804,11 +808,28 @@ def _solve_closed_loops(
     if not any(locked.values()):
         return positions
 
+    limits = tuple(dof.limits for _, dof in candidates)
+    periodic = tuple(
+        dof.limits is not None
+        and cast(JointAxis, dof.axis).is_rotational
+        and dof.limits[1] - dof.limits[0] >= 2.0 * math.pi - 1e-9
+        for _, dof in candidates
+    )
+
     def assemble(scale: float, values: np.ndarray) -> dict[str, float]:
         result = {name: value * scale for name, value in positions.items()}
         for (joint, dof), value in zip(candidates, values, strict=True):
-            result[joint.dof_id(dof)] = _clamp(float(value), dof.limits)
+            result[joint.dof_id(dof)] = float(value)
         return result
+
+    def project(values: np.ndarray) -> np.ndarray:
+        return np.asarray(
+            [
+                _project_value(float(value), bound, wraps)
+                for value, bound, wraps in zip(values, limits, periodic, strict=True)
+            ],
+            dtype=np.float64,
+        )
 
     def residual(scale: float, values: np.ndarray) -> np.ndarray:
         placed = _propagate_transforms(
@@ -830,19 +851,27 @@ def _solve_closed_loops(
         for _ in range(40):
             current = residual(scale, values)
             error = float(np.linalg.norm(current))
-            if error < _LOOP_TOLERANCE:
+            if error < _LOOP_TOLERANCE * 1e-2:
                 break
             jacobian = np.empty((len(current), len(values)), dtype=np.float64)
             for index in range(len(values)):
+                # Differentiate into the feasible interval: a nudge past a
+                # limit would sample the pose the solver may not return.
+                bound = limits[index]
+                nudge = 1e-6
+                if bound is not None and not periodic[index] and values[index] + nudge > bound[1]:
+                    nudge = -1e-6
                 nudged = values.copy()
-                nudged[index] += 1e-6
-                jacobian[:, index] = (residual(scale, nudged) - current) / 1e-6
+                nudged[index] += nudge
+                jacobian[:, index] = (residual(scale, nudged) - current) / nudge
             normal = jacobian.T @ jacobian + damping * np.eye(len(values))
             try:
                 delta = np.linalg.solve(normal, -jacobian.T @ current)
             except np.linalg.LinAlgError:
                 break
-            trial = values + delta
+            # Project the iterate itself, not just its evaluation: an iterate
+            # parked beyond a limit sees a flat residual and never comes back.
+            trial = project(values + delta)
             if float(np.linalg.norm(residual(scale, trial))) < error:
                 values = trial
                 damping = max(damping * 0.5, 1e-9)
@@ -851,11 +880,26 @@ def _solve_closed_loops(
                 if damping > 1e6:
                     break
 
-    error = float(np.linalg.norm(residual(1.0, values)))
-    if error > 1e-4:
+    # One gate, equal to validate_state's per-axis tolerance: anything
+    # accepted here passes validation, anything rejected names the loop.
+    worst = float(np.max(np.abs(residual(1.0, values)), initial=0.0))
+    if worst > _LOOP_TOLERANCE:
         names = ", ".join(repr(closure.name) for closure in active_closures)
+        pinned = sorted(
+            joint.dof_id(dof)
+            for ((joint, dof), value, bound, wraps) in zip(
+                candidates, values, limits, periodic, strict=True
+            )
+            if bound is not None and not wraps and (value <= bound[0] or value >= bound[1])
+        )
+        if pinned:
+            raise LoopClosureError(
+                f"pose leaves loop closure {names} open (constraint residual {worst:.3g}) "
+                f"with solved joint positions pinned at their limits: {pinned!r}; "
+                "widen those limits if the mechanism should reach this pose"
+            )
         raise LoopClosureError(
-            f"pose leaves loop closure {names} open (constraint residual {error:.3g}); "
+            f"pose leaves loop closure {names} open (constraint residual {worst:.3g}); "
             "the mechanism cannot reach this pose"
         )
     return assemble(1.0, values)
@@ -894,6 +938,21 @@ def _clamp(value: float, limits: tuple[float, float] | None) -> float:
     if limits is None:
         return value
     return min(max(value, limits[0]), limits[1])
+
+
+def _project_value(value: float, limits: tuple[float, float] | None, periodic: bool) -> float:
+    """Return the nearest in-range coordinate: wrapped if periodic, clamped if not.
+
+    A full-circle hinge has no wall at +-pi: the coordinate is periodic, and
+    clamping it would strand a solution that continues on the other side of
+    the seam.
+    """
+
+    if limits is None or not periodic:
+        return _clamp(value, limits)
+    span = limits[1] - limits[0]
+    wrapped = limits[0] + math.fmod(value - limits[0], span)
+    return wrapped + span if wrapped < limits[0] else wrapped
 
 
 def _values_from(joint: Joint, positions: Mapping[str, float]) -> dict[JointAxis, float]:
@@ -947,15 +1006,76 @@ def _joint_values(joint: Joint, transforms: Mapping[str, Mat4]) -> dict[JointAxi
     relative = np.linalg.inv(body0 @ _frame_matrix(joint.frame0)) @ (
         body1 @ _frame_matrix(joint.frame1)
     )
-    rotation = trimesh.transformations.euler_from_matrix(relative, axes="sxyz")
     return {
         JointAxis.TRANS_X: float(relative[0, 3]),
         JointAxis.TRANS_Y: float(relative[1, 3]),
         JointAxis.TRANS_Z: float(relative[2, 3]),
-        JointAxis.ROT_X: float(rotation[0]),
-        JointAxis.ROT_Y: float(rotation[1]),
-        JointAxis.ROT_Z: float(rotation[2]),
+        **_rotation_values(joint, relative),
     }
+
+
+def _rotation_values(joint: Joint, relative: Mat4) -> dict[JointAxis, float]:
+    """Per-axis rotation readings that stay honest over the full circle.
+
+    An Euler decomposition confines its middle angle to [-pi/2, pi/2]; past
+    that, a pure Y rotation of 1.7 rad reads as (-pi, 1.44, -pi) and a healthy
+    hinge appears to violate its locked axes. Joints with at most one free
+    rotational axis -- fixed, prismatic, revolute, cylindrical -- are measured
+    against that axis directly instead, which has no branch to fall off. Only
+    joints with two or more free rotational axes still read through the Euler
+    decomposition, whose angles are what their motion model composes.
+    """
+
+    free = [
+        cast(JointAxis, dof.axis) for dof in joint.dofs if cast(JointAxis, dof.axis).is_rotational
+    ]
+    rotation = np.asarray(relative[:3, :3], dtype=np.float64)
+    if len(free) > 1:
+        angles = trimesh.transformations.euler_from_matrix(relative, axes="sxyz")
+        return {
+            JointAxis.ROT_X: float(angles[0]),
+            JointAxis.ROT_Y: float(angles[1]),
+            JointAxis.ROT_Z: float(angles[2]),
+        }
+    values = {JointAxis.ROT_X: 0.0, JointAxis.ROT_Y: 0.0, JointAxis.ROT_Z: 0.0}
+    if free:
+        direction = np.zeros(3, dtype=np.float64)
+        direction[free[0].component] = 1.0
+        # The best-fit angle about a known axis: for R = Rot(a, angle),
+        # vee((R - R^T)/2) = sin(angle) * a and tr(R) - a.R.a = 2 cos(angle).
+        skew = (rotation - rotation.T) * 0.5
+        sine = float(direction @ (skew[2, 1], skew[0, 2], skew[1, 0]))
+        cosine = float(np.trace(rotation) - direction @ rotation @ direction) * 0.5
+        angle = math.atan2(sine, cosine)
+        values[free[0]] = angle
+        rotation = (
+            np.asarray(
+                trimesh.transformations.rotation_matrix(-angle, direction),
+                dtype=np.float64,
+            )[:3, :3]
+            @ rotation
+        )
+    leftover = _rotation_vector(rotation)
+    for axis in (JointAxis.ROT_X, JointAxis.ROT_Y, JointAxis.ROT_Z):
+        if axis not in free:
+            values[axis] = float(leftover[axis.component])
+    return values
+
+
+def _rotation_vector(rotation: np.ndarray) -> np.ndarray:
+    """The axis-angle vector of a rotation matrix; zero for the identity."""
+
+    embedded = np.identity(4, dtype=np.float64)
+    embedded[:3, :3] = rotation
+    quaternion = trimesh.transformations.quaternion_from_matrix(embedded)
+    vector = np.asarray(quaternion[1:], dtype=np.float64)
+    length = float(np.linalg.norm(vector))
+    if length < 1e-12:
+        return np.zeros(3, dtype=np.float64)
+    angle = 2.0 * math.atan2(length, float(quaternion[0]))
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+    return vector * (angle / length)
 
 
 def _motion_matrix(joint: Joint, positions: Mapping[str, float]) -> Mat4:
