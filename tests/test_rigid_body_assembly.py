@@ -18,7 +18,7 @@ from articraft.sdk.assembly import (
     RigidBodyAssembly,
 )
 from articraft.sdk.bodies import RigidBody
-from articraft.sdk.errors import ValidationError
+from articraft.sdk.errors import LoopClosureError, ValidationError
 
 
 def add_body(assembly: RigidBodyAssembly, name: str) -> RigidBody:
@@ -153,8 +153,10 @@ def test_closed_loop_joints_are_derived_as_regular_excluded_constraints(
     assert resolved.has_closed_loops
     assert np.allclose(resolved.reference_state.matrix("rocker")[:3, 3], (2.0, 0.0, 0.0))
 
-    with pytest.raises(ValidationError, match="closed-loop assemblies"):
+    with pytest.raises(LoopClosureError, match="cannot reach this pose"):
         resolved.forward_kinematics({"ground_crank.rotZ": 0.2})
+    with pytest.raises(ValidationError, match="closure joint positions"):
+        resolved.forward_kinematics({"rocker_ground.rotZ": 0.2})
 
 
 def test_closed_loop_requires_an_explicit_articulation_tree() -> None:

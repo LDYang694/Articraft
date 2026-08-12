@@ -11,7 +11,7 @@ import numpy as np
 import trimesh
 
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
-from articraft.sdk.errors import ValidationError
+from articraft.sdk.errors import LoopClosureError, ValidationError
 from articraft.sdk.joints import _as_name
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.physics import PhysicsScene
@@ -343,13 +343,8 @@ class ResolvedRigidBodyAssembly:
         return PhysicsState(matrices, dof_positions=derived)
 
     def forward_kinematics(self, dof_positions: Mapping[str, float] | None = None) -> PhysicsState:
-        """Pose an acyclic physical graph; closed loops require a solver or body poses."""
+        """Pose the articulation tree and solve unspecified coordinates that close loops."""
 
-        if self.has_closed_loops:
-            raise ValidationError(
-                "closed-loop assemblies cannot be posed from joint positions; "
-                "provide a complete PhysicsState or use a physics solver"
-            )
         positions = {
             _as_name(name, field_name="joint position"): _finite(
                 value, field_name=f"joint position {name!r}"
@@ -369,12 +364,40 @@ class ResolvedRigidBodyAssembly:
                         f"limits {dof.limits!r}"
                     )
 
-        transforms = _propagate_transforms(
-            self.rigid_bodies,
-            tuple(item.joint for item in self.joints),
-            self.articulations,
-            positions,
-        )
+        tree = tuple(item.joint for item in self.joints if not item.exclude_from_articulation)
+        closures = tuple(item.joint for item in self.joints if item.exclude_from_articulation)
+        if self.has_closed_loops and _edge_graph_has_cycle(tree):
+            raise ValidationError(
+                "closed-loop forward kinematics requires an explicit articulation tree; "
+                "provide a complete PhysicsState for a maximal-coordinate assembly"
+            )
+        closure_dofs = {joint.dof_id(dof) for joint in closures for dof in joint.dofs}
+        supplied_closure_dofs = sorted(set(positions) & closure_dofs)
+        if supplied_closure_dofs:
+            raise ValidationError(
+                "closure joint positions are derived from body poses and cannot be supplied: "
+                f"{supplied_closure_dofs!r}"
+            )
+        if closures:
+            positions = _solve_closed_loops(
+                self.rigid_bodies,
+                tree,
+                closures,
+                self.articulations,
+                positions,
+            )
+        try:
+            transforms = _propagate_transforms(
+                self.rigid_bodies,
+                tree,
+                self.articulations,
+                positions,
+            )
+        except ValidationError as exc:
+            raise ValidationError(
+                "forward kinematics requires one spanning articulation tree; "
+                "provide a complete PhysicsState for this assembly"
+            ) from exc
         return self.validate_state(PhysicsState(transforms, dof_positions=positions))
 
 
@@ -732,6 +755,145 @@ def _propagate_transforms(
         if not progressed:
             raise ValidationError("assembly graph could not be placed from its root")
     return {body.name: transforms[body] for body in bodies}
+
+
+_LOOP_STEPS = 5
+_LOOP_TOLERANCE = 1e-6
+
+
+def _solve_closed_loops(
+    bodies: tuple[RigidBody, ...],
+    tree: tuple[Joint, ...],
+    closures: tuple[Joint, ...],
+    articulations: tuple[ResolvedArticulation, ...],
+    positions: dict[str, float],
+) -> dict[str, float]:
+    """Solve unspecified tree DOFs so every excluded constraint stays closed.
+
+    The articulation tree supplies coordinates; excluded joints supply residuals.
+    Walking from the zero configuration to the requested pose keeps linkages on
+    the assembly branch they were authored in instead of snapping through a
+    singular pose.
+    """
+
+    active_closures: list[Joint] = []
+    candidates: list[tuple[Joint, JointDOF]] = []
+    seen: set[str] = set()
+    for closure in closures:
+        path = _joint_path(tree, closure.body0, closure.body1)
+        if path is None:
+            raise ValidationError(
+                f"closure joint {closure.name!r} is not spanned by one articulation tree; "
+                "provide a complete PhysicsState for this assembly"
+            )
+        active_closures.append(closure)
+        for joint in path:
+            for dof in joint.dofs:
+                dof_id = joint.dof_id(dof)
+                if dof_id not in positions and dof_id not in seen:
+                    seen.add(dof_id)
+                    candidates.append((joint, dof))
+
+    if not candidates:
+        return positions
+
+    locked = {
+        closure: tuple(axis for axis in JointAxis if axis not in {dof.axis for dof in closure.dofs})
+        for closure in active_closures
+    }
+    if not any(locked.values()):
+        return positions
+
+    def assemble(scale: float, values: np.ndarray) -> dict[str, float]:
+        result = {name: value * scale for name, value in positions.items()}
+        for (joint, dof), value in zip(candidates, values, strict=True):
+            result[joint.dof_id(dof)] = _clamp(float(value), dof.limits)
+        return result
+
+    def residual(scale: float, values: np.ndarray) -> np.ndarray:
+        placed = _propagate_transforms(
+            bodies,
+            tree,
+            articulations,
+            assemble(scale, values),
+        )
+        rows: list[float] = []
+        for closure in active_closures:
+            joint_values = _joint_values(closure, placed)
+            rows.extend(joint_values[axis] for axis in locked[closure])
+        return np.asarray(rows, dtype=np.float64)
+
+    values = np.zeros(len(candidates), dtype=np.float64)
+    for step in range(1, _LOOP_STEPS + 1):
+        scale = step / _LOOP_STEPS
+        damping = 1e-6
+        for _ in range(40):
+            current = residual(scale, values)
+            error = float(np.linalg.norm(current))
+            if error < _LOOP_TOLERANCE:
+                break
+            jacobian = np.empty((len(current), len(values)), dtype=np.float64)
+            for index in range(len(values)):
+                nudged = values.copy()
+                nudged[index] += 1e-6
+                jacobian[:, index] = (residual(scale, nudged) - current) / 1e-6
+            normal = jacobian.T @ jacobian + damping * np.eye(len(values))
+            try:
+                delta = np.linalg.solve(normal, -jacobian.T @ current)
+            except np.linalg.LinAlgError:
+                break
+            trial = values + delta
+            if float(np.linalg.norm(residual(scale, trial))) < error:
+                values = trial
+                damping = max(damping * 0.5, 1e-9)
+            else:
+                damping *= 8.0
+                if damping > 1e6:
+                    break
+
+    error = float(np.linalg.norm(residual(1.0, values)))
+    if error > 1e-4:
+        names = ", ".join(repr(closure.name) for closure in active_closures)
+        raise LoopClosureError(
+            f"pose leaves loop closure {names} open (constraint residual {error:.3g}); "
+            "the mechanism cannot reach this pose"
+        )
+    return assemble(1.0, values)
+
+
+def _joint_path(
+    joints: tuple[Joint, ...],
+    start: JointEndpoint,
+    end: JointEndpoint,
+) -> tuple[Joint, ...] | None:
+    adjacency: dict[JointEndpoint, list[tuple[JointEndpoint, Joint]]] = {}
+    for joint in joints:
+        adjacency.setdefault(joint.body0, []).append((joint.body1, joint))
+        adjacency.setdefault(joint.body1, []).append((joint.body0, joint))
+    previous: dict[JointEndpoint, tuple[JointEndpoint, Joint] | None] = {start: None}
+    pending = [start]
+    while pending and end not in previous:
+        node = pending.pop(0)
+        for neighbour, joint in adjacency.get(node, []):
+            if neighbour in previous:
+                continue
+            previous[neighbour] = (node, joint)
+            pending.append(neighbour)
+    if end not in previous:
+        return None
+    path: list[Joint] = []
+    node = end
+    while previous[node] is not None:
+        node, joint = previous[node]
+        path.append(joint)
+    path.reverse()
+    return tuple(path)
+
+
+def _clamp(value: float, limits: tuple[float, float] | None) -> float:
+    if limits is None:
+        return value
+    return min(max(value, limits[0]), limits[1])
 
 
 def _values_from(joint: Joint, positions: Mapping[str, float]) -> dict[JointAxis, float]:
