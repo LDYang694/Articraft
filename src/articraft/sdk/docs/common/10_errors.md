@@ -42,9 +42,12 @@ its `TestReport`.
 ## `LoopClosureError`
 
 A `ValidationError` raised when supplied tree coordinates cannot satisfy every
-closed-loop constraint. The requested pose is unreachable from the authored
-assembly branch. Tighten the driving DOF limits or fix the body geometry and
-joint frames that determine its range.
+closed-loop constraint. The message says which of two causes applies. When it
+names solved joint positions *pinned at their limits*, those limits are what
+stop the loop: widen them if the pose should be reachable, or tighten the
+driving DOF's limits so the unreachable pose is never requested. Otherwise the
+linkage geometry itself cannot reach the pose: shorten the drive's range, or
+fix the link lengths and joint frames that decide it.
 
 ## Built-in Python errors
 

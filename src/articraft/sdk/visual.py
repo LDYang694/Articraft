@@ -396,20 +396,29 @@ def _render_motion_strip(
     mesh_tolerance: float,
 ) -> Image.Image:
     joint = model.get_joint(view.articulation)
+    if not joint.dofs:
+        raise ValidationError(
+            f"motion strip joint {joint.name!r} is fixed; it has no motion to sweep"
+        )
+    rotational = [dof for dof in joint.dofs if cast(JointAxis, dof.axis).is_rotational]
+    swept = rotational[0] if rotational else joint.dofs[0]
+    # Pose by the swept DOF's qualified id: a bare joint name resolves only
+    # for single-DOF joints, and this one may carry several.
+    dof_id = joint.dof_id(swept)
     positions = list(view.positions)
     if not positions:
-        rotational = [dof for dof in joint.dofs if cast(JointAxis, dof.axis).is_rotational]
-        limits = (rotational[0] if rotational else joint.dofs[0]).limits if joint.dofs else None
-        if limits is not None:
-            low, high = limits
+        if swept.limits is not None:
+            low, high = swept.limits
         else:
             low, high = 0.0, math.pi
         count = max(2, int(view.samples))
-        positions = [low + (high - low) * index / (count - 1) for index in range(count)]
+        positions = [
+            min(max(low + (high - low) * index / (count - 1), low), high) for index in range(count)
+        ]
     frames: list[Image.Image] = []
     fit_vertices: list[np.ndarray] = []
     for value in positions:
-        pose = {**base_pose, joint.name: float(value)}
+        pose = {**base_pose, dof_id: float(value)}
         meshes = _world_meshes(
             model,
             pose,
@@ -421,7 +430,7 @@ def _render_motion_strip(
         fit_vertices.extend(np.asarray(item.mesh.vertices) for item in meshes)
     shared_fit = np.concatenate(fit_vertices, axis=0)
     for value in positions:
-        pose = {**base_pose, joint.name: float(value)}
+        pose = {**base_pose, dof_id: float(value)}
         frame = _render_model(
             model,
             view.view,
@@ -431,7 +440,7 @@ def _render_motion_strip(
         )
         draw = ImageDraw.Draw(frame)
         draw.rectangle((0, 0, frame.width, 25), fill=(255, 255, 255))
-        draw.text((8, 6), f"{joint.name} = {value:.4g}", fill=(25, 25, 25))
+        draw.text((8, 6), f"{dof_id} = {value:.4g}", fill=(25, 25, 25))
         frames.append(frame)
     width = sum(frame.width for frame in frames) + view.gap * (len(frames) - 1)
     height = max(frame.height for frame in frames)

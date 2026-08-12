@@ -78,8 +78,8 @@ AllowedOverlap(
     part_a: str,
     part_b: str,
     reason: str,
-    shape_a: str | None = None,
-    shape_b: str | None = None,
+    shape_a: str,
+    shape_b: str,
 )
 ```
 
@@ -106,12 +106,13 @@ one or more exact issue types.
 DistanceFinding(
     part_a: str,
     part_b: str,
-    shape_a: str | None,
-    shape_b: str | None,
     distance: float,
+    collided: bool,
+    shape_a: str | None = None,
+    shape_b: str | None = None,
     nearest_a: tuple[float, float, float] | None = None,
     nearest_b: tuple[float, float, float] | None = None,
-    collided: bool = False,
+    contacts: tuple[ContactInfo, ...] = (),
 )
 ```
 
@@ -232,7 +233,7 @@ than its `minimum`.
 
 ## Poses
 
-Use `pose()` to apply temporary articulation positions.
+Use `pose()` to apply temporary joint positions.
 
 ```python
 rest = ctx.part_world_position("slider")
@@ -252,20 +253,34 @@ ctx.pose(
 )
 ```
 
-Mapping keys can be articulation objects or articulation names. Keyword names are articulation
-names. Every value must be finite. A prismatic value translates along its authored axis. A
-revolute or continuous value rotates around its authored axis. A fixed articulation ignores its
-value.
+Keys name **joints**, not articulations, in one of three spellings:
+
+- a `Joint` object;
+- a joint name (`"hinge"`) -- only for a joint with exactly one DOF;
+- a qualified DOF id (`"hinge.rotZ"`, `"slide.transX"`) -- the joint name, a
+  dot, and the `JointAxis` value. This is the only spelling for a joint that
+  carries several DOFs, and the same ids key `forward_kinematics(...)` and
+  `PhysicsState.dof_positions`.
+
+DOF ids contain a dot, so they must go through the mapping argument rather
+than a keyword. Every value must be finite and inside the DOF's limits;
+out-of-limit values raise `ValidationError` at the `pose()` call. A fixed
+joint has no DOF to pose, and a loop-closing joint's value is derived from
+the tree, so posing either raises.
 
 The context restores the previous pose when the `with` block ends. Nested pose blocks therefore
-restore the pose that was active before each block.
-
-`pose()` does not clamp values to a joint's limits. Use positions that are valid for the design.
+restore the pose that was active before each block. In a closed-loop assembly, checks under a
+pose run the graph solver; a pose the ring cannot reach raises `LoopClosureError` from a direct
+measurement, while the `*_at_poses` sweep checks record it as a failed sample and continue.
 A loop-closing joint cannot be posed at all: its value is decided by the rest of the mechanism.
 
 ### `PoseSample`
 
-`sample_joint(...)` returns `PoseSample` records.
+`sample_joint(...)` returns `PoseSample` records. It requires a joint with
+exactly one DOF and rejects loop-closing joints, whose values are derived
+rather than posed. The default sweep spans the joint's authored limits; in a
+closed loop the reachable range can be narrower, and the `*_at_poses` checks
+record any unreachable sample as a failure.
 
 ```python
 poses = ctx.sample_joint("lid_hinge", samples=5)

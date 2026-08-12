@@ -36,7 +36,7 @@ def test_load_viewer_run_reads_each_usdz_version(tmp_path) -> None:
     assert latest["can_pose"] is True
     assert latest["parts"] == [
         {
-            "name": "base plate",
+            "name": "base_plate",
             "usd_name": "base_plate",
             "shapes": [
                 {
@@ -58,9 +58,9 @@ def test_load_viewer_run_reads_each_usdz_version(tmp_path) -> None:
         },
     ]
     joint = cast(list[dict[str, Any]], latest["articulations"])[0]
-    assert joint["name"] == "linear travel"
+    assert joint["name"] == "linear_travel"
     assert joint["type"] == "prismatic"
-    assert joint["parent"] == "base plate"
+    assert joint["parent"] == "base_plate"
     assert joint["child"] == "carriage"
     # A named axis plus a rotated frame: the diagonal lives in origin.rpy.
     assert joint["axis"] == [1.0, 0.0, 0.0]
@@ -195,7 +195,7 @@ def _revolute_model() -> RigidBodyAssembly:
     door = model.rigid_body("door")
     door.add(Box(0.1, 0.02, 0.2), name="panel")
     model.joint(
-        "hinge joint",
+        "hinge_joint",
         body0=base,
         frame0=JointFrame(),
         body1=door,
@@ -207,20 +207,20 @@ def _revolute_model() -> RigidBodyAssembly:
 
 def _prismatic_model() -> RigidBodyAssembly:
     model = RigidBodyAssembly("slider")
-    base = model.rigid_body("base plate")
+    base = model.rigid_body("base_plate")
     base.add(Box(0.3, 0.2, 0.05), name="base shape")
     carriage = model.rigid_body("carriage")
     carriage.add(Box(0.05, 0.05, 0.05), name="payload")
     # A diagonal travel direction rides in the frame's rotation.
     model.joint(
-        "linear travel",
+        "linear_travel",
         body0=base,
         frame0=JointFrame(xyz=(0.1, 0.2, 0.3), rpy=(0.0, 0.1, math.pi / 4.0)),
         body1=carriage,
         frame1=JointFrame(),
         dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.1, 0.2)),),
     )
-    model.articulation("main", root=base, joints=["linear travel"])
+    model.articulation("main", root=base, joints=["linear_travel"])
     return model
 
 

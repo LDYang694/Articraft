@@ -28,6 +28,7 @@ from articraft.sdk.assembly import (
     WORLD,
     Joint,
     JointAxis,
+    JointDOF,
     PhysicsState,
     RigidBodyAssembly,
 )
@@ -389,9 +390,7 @@ class TestContext:
             self._reject_unposable(joint.name)
             position = _finite(value, "joint position")
             if dof.limits is not None and not dof.limits[0] <= position <= dof.limits[1]:
-                raise ValidationError(
-                    f"joint position {dof_id!r} is outside limits {dof.limits!r}"
-                )
+                raise ValidationError(f"joint position {dof_id!r} is outside limits {dof.limits!r}")
             updates[dof_id] = position
         previous = dict(self._pose)
         previous_state = self._state
@@ -718,9 +717,7 @@ class TestContext:
         for index, pose in enumerate(_pose_dicts(poses)):
             try:
                 with self.pose(pose):
-                    query = self._collision_query(
-                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
-                    )
+                    query = self._collision_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
             except LoopClosureError as exc:
                 failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
                 continue
@@ -756,9 +753,7 @@ class TestContext:
         for index, pose in enumerate(_pose_dicts(poses)):
             try:
                 with self.pose(pose):
-                    result = self._distance_query(
-                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
-                    )
+                    result = self._distance_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
             except LoopClosureError as exc:
                 failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
                 continue
@@ -792,9 +787,7 @@ class TestContext:
         for index, pose in enumerate(_pose_dicts(poses)):
             try:
                 with self.pose(pose):
-                    result = self._distance_query(
-                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
-                    )
+                    result = self._distance_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
             except LoopClosureError as exc:
                 failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
                 continue
@@ -1660,8 +1653,7 @@ def _articulation_sweep_values(
     # Clamp against float overshoot: the last step can land a hair past the
     # upper limit and a strict limit check would reject the joint's own range.
     return [
-        min(max(low + (high - low) * index / (samples - 1), low), high)
-        for index in range(samples)
+        min(max(low + (high - low) * index / (samples - 1), low), high) for index in range(samples)
     ]
 
 

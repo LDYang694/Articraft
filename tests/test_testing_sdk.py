@@ -532,31 +532,31 @@ def test_failed_pose_leaves_an_enclosing_state_intact() -> None:
     context = TestContext(model)
 
     with context.state(moved):
-        with pytest.raises(ValidationError, match="unknown joint position"):
-            with context.pose(bogus=1.0):
-                pass
+        with (
+            pytest.raises(ValidationError, match="unknown joint position"),
+            context.pose(bogus=1.0),
+        ):
+            pass
         assert context.part_world_position("body")[0] == pytest.approx(2.0)
 
 
 def test_nested_pose_spellings_share_one_coordinate() -> None:
-    """"hinge" and "hinge.rotZ" are the same DOF; the innermost value wins."""
+    """ "hinge" and "hinge.rotZ" are the same DOF; the innermost value wins."""
 
     import math as _math
 
     context = TestContext(_swing_arm())
 
-    with context.pose(hinge=0.3), context.pose({"hinge.rotZ": 0.5}):
-        with context.pose(hinge=0.7):
-            tip = context.part_world_point("arm", (3.0, 0.0, 0.0))
-            assert tip[0] == pytest.approx(3.0 * _math.cos(0.7))
+    with context.pose(hinge=0.3), context.pose({"hinge.rotZ": 0.5}), context.pose(hinge=0.7):
+        tip = context.part_world_point("arm", (3.0, 0.0, 0.0))
+        assert tip[0] == pytest.approx(3.0 * _math.cos(0.7))
 
 
 def test_pose_rejects_out_of_limit_values_at_entry() -> None:
     context = TestContext(_swing_arm())
 
-    with pytest.raises(ValidationError, match="outside limits"):
-        with context.pose(hinge=5.0):
-            pass
+    with pytest.raises(ValidationError, match="outside limits"), context.pose(hinge=5.0):
+        pass
 
 
 def test_pose_sweeps_record_unreachable_loop_poses() -> None:

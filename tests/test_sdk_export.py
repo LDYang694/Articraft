@@ -218,7 +218,9 @@ def test_reserved_and_shared_names_do_not_corrupt_the_stage(tmp_path) -> None:
         for prim in stage.Traverse()
         if prim.GetAttribute("physics:staticFriction").HasAuthoredValueOpinion()
     )
-    assert frictions == pytest.approx([0.05, Material.STEEL.friction[0]])
+    steel_friction = Material.STEEL.friction
+    assert steel_friction is not None
+    assert frictions == pytest.approx([0.05, steel_friction[0]])
 
 
 def _hinge() -> RigidBodyAssembly:

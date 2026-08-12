@@ -10,8 +10,8 @@ from articraft.sdk import BodyState, PhysicsScene
 ```
 
 `PhysicsScene` belongs to the model, because there is one world. `BodyState` belongs to a part,
-because each part is one rigid body. See [articulated objects and
-parts](30_assembly.md) for the structure these attach to.
+because each part is one rigid body. See [assemblies and rigid
+bodies](30_assembly.md) for the structure these attach to.
 
 ## `PhysicsScene`
 
@@ -31,7 +31,8 @@ moon = RigidBodyAssembly("rover", scene=PhysicsScene(magnitude=1.62))
 
 `direction` is a world-space direction and is stored normalized, so its length is ignored. It must
 be nonzero. `magnitude` is in m/s^2 and must not be negative; `0.0` is a valid free-fall world. The
-default is available as `EARTH_GRAVITY` when a scene needs to say so explicitly.
+default magnitude is the float constant `EARTH_GRAVITY` (9.81), for a scene that wants to say so
+explicitly: `PhysicsScene(magnitude=EARTH_GRAVITY)`.
 
 ## `BodyState`
 

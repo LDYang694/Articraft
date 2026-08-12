@@ -52,14 +52,14 @@ model.joint(
     frame0=JointFrame(xyz=(0.0, 0.25, 0.02)),
     body1=lid,
     frame1=JointFrame(xyz=(0.0, 0.25, -0.01)),
-    dofs=(JointDOF(JointAxis.ROT_Y, limits=(0.0, 1.9)),),
+    # The hinge edge runs along X, so ROT_X; negative angles open the lid.
+    dofs=(JointDOF(JointAxis.ROT_X, limits=(-1.9, 0.0)),),
 )
 model.articulation("main", root=body, joints=["lid_hinge"])
 ```
 
-
-Each frame is where the joint sits *in that body's own coordinates*, so the two coincide at rest.
-Limits are radians for rotation, meters for travel, and must contain zero.
+Each frame is the joint *in that body's coordinates*; the two coincide at rest.
+Limits are radians or meters and must contain zero.
 
 **Count the pivots.** A body pinned in two places takes two joints, which makes the mechanism a
 ring -- linkages, four-bars, grippers and scissors all are. Author every joint it has, then leave

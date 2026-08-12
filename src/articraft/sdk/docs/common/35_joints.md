@@ -85,7 +85,9 @@ model.articulation(
 ```
 
 A floating articulation roots at a body. A fixed articulation roots at a
-selected joint connecting one body to `WORLD`.
+selected joint connecting one body to `WORLD`. A floating articulation may
+not *select* a joint that touches `WORLD`: to anchor an assembly, make that
+joint the articulation root instead of listing it in `joints`.
 
 The selected joints must form one connected acyclic tree. Selection can be
 inferred only when the assembly has one articulation and one unambiguous
@@ -151,6 +153,11 @@ An unreachable pose raises `LoopClosureError`.
 ```python
 state = model.resolve().forward_kinematics({"ground_crank.rotY": 0.4})
 ```
+
+Positions are keyed by DOF id: the joint name, a dot, and the `JointAxis`
+value (`"ground_crank.rotY"`, `"slide.transX"`). The same ids appear in
+`PhysicsState.dof_positions`, including the derived values of loop-closing
+joints -- a free check that the ring stayed closed.
 
 The solver uses independent D6 coordinates and the authored constraints. It is
 a convenience for posing and geometry checks, not a dynamics backend. Closed-

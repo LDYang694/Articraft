@@ -20,22 +20,28 @@ All geometry and linear physics values use meters.
 RigidBodyAssembly(name: str, *, scene: PhysicsScene = PhysicsScene())
 ```
 
-The name must be nonempty. The assembly exposes its authored
-`rigid_bodies`, `joints`, and `articulations` for inspection. Create entries
-through `rigid_body(...)`, `joint(...)`, and `articulation(...)` so references
-are resolved immediately and duplicate names fail where they are authored.
+Assembly, rigid body, joint, and articulation names must be identifiers --
+letters, digits, and underscores, not starting with a digit -- because they
+travel verbatim into USD prim paths, DOF ids, and the manifest. Shape names
+are display labels and may be any nonempty string. The assembly exposes its
+authored `rigid_bodies`, `joints`, and `articulations` for inspection. Create
+entries through `rigid_body(...)`, `joint(...)`, and `articulation(...)` so
+references are resolved immediately and duplicate names fail where they are
+authored.
 
 ```python
 model.rigid_body(
     name: str,
     *,
     mass_properties: MassProperties | None = None,
+    body_state: BodyState | None = None,
 ) -> RigidBody
 ```
 
 `PhysicsScene` sets gravity for the exported stage. `MassProperties` overrides
 mass inferred from shape geometry and `Material`. A body's optional `BodyState`
-sets its initial rigid-body flags and velocity.
+sets its initial rigid-body flags and velocity; see
+[simulation settings](38_simulation_settings.md).
 
 ## `RigidBody` and `body.add(...)`
 
