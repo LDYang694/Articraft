@@ -8,6 +8,8 @@ from typing import TypeAlias
 import igl
 import numpy as np
 import trimesh
+from scipy import sparse
+from scipy.sparse.csgraph import connected_components
 
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
 from articraft.sdk.errors import ValidationError
@@ -360,36 +362,27 @@ def _topology(faces: np.ndarray) -> _Topology:
 
 
 def _face_components(face_count: int, edge_face_indices: np.ndarray) -> np.ndarray:
+    """Label each face with its connected component, joining faces across shared edges.
+
+    Sorting by edge id makes rows of one edge adjacent, so linking each row to
+    the next row of the same edge chains every face on that edge together --
+    including all faces of a non-manifold edge -- without visiting Python-level
+    edges one by one.
+    """
+
     if face_count == 0:
         return np.empty(0, dtype=np.int64)
-    parents = np.arange(face_count)
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = int(parents[index])
-        return index
-
-    def union(first: int, second: int) -> None:
-        first_root = find(first)
-        second_root = find(second)
-        if first_root != second_root:
-            parents[second_root] = first_root
-
-    order = np.argsort(edge_face_indices[:, 0], kind="stable")
-    ordered = edge_face_indices[order]
-    start = 0
-    while start < len(ordered):
-        end = start + 1
-        while end < len(ordered) and ordered[end, 0] == ordered[start, 0]:
-            end += 1
-        first_face = int(ordered[start, 1])
-        for row in ordered[start + 1 : end]:
-            union(first_face, int(row[1]))
-        start = end
-    roots = np.asarray([find(index) for index in range(face_count)])
-    _, component_ids = np.unique(roots, return_inverse=True)
-    return component_ids
+    ordered = edge_face_indices[np.argsort(edge_face_indices[:, 0], kind="stable")]
+    same_edge = ordered[:-1, 0] == ordered[1:, 0]
+    graph = sparse.coo_matrix(
+        (
+            np.ones(int(np.count_nonzero(same_edge))),
+            (ordered[:-1, 1][same_edge], ordered[1:, 1][same_edge]),
+        ),
+        shape=(face_count, face_count),
+    )
+    _count, component_ids = connected_components(graph, directed=False)
+    return component_ids.astype(np.int64)
 
 
 def _faces_outside_largest_positive_component(

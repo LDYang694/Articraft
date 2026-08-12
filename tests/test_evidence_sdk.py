@@ -30,6 +30,7 @@ from articraft.sdk import (
     render_view,
 )
 from articraft.sdk.export import export_assembly
+from articraft.sdk.mesh import subdivide_mesh
 
 
 def test_partial_lathe_is_capped_watertight_and_axis_aware() -> None:
@@ -94,6 +95,19 @@ def test_geometry_metrics_cover_components_orientation_and_symmetry() -> None:
     symmetric = RigidBodyAssembly("symmetric")
     symmetric.rigid_body("body").add(BoxGeometry((2.0, 1.0, 1.0)), name="box")
     assert TestContext(symmetric).expect_symmetry(tolerance=1e-9)
+
+    # The two halves mirror each other in shape but not in vertex layout: the
+    # subdivided half's reflected vertices land mid-face on the coarse half,
+    # far from any of its vertices. Only a point-to-surface reading sees the
+    # symmetry.
+    uneven = RigidBodyAssembly("uneven_tessellation")
+    halves = uneven.rigid_body("body")
+    halves.add(BoxGeometry((0.02, 0.02, 0.02)).translate(-0.02, 0.0, 0.0), name="coarse")
+    halves.add(
+        subdivide_mesh(BoxGeometry((0.02, 0.02, 0.02)), levels=2).translate(0.02, 0.0, 0.0),
+        name="fine",
+    )
+    assert TestContext(uneven).expect_symmetry(plane_normal=(1.0, 0.0, 0.0), tolerance=1e-6)
 
     reversed_model = RigidBodyAssembly("reversed")
     reversed_mesh = BoxGeometry((1.0, 1.0, 1.0))
