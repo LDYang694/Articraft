@@ -9,6 +9,7 @@ from typing import TypeAlias, cast
 
 import numpy as np
 import trimesh
+from scipy.optimize import least_squares  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk._values import _as_identifier, _as_name
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
@@ -798,8 +799,8 @@ def _propagate_transforms(
 
 _LOOP_STEPS = 5
 # The acceptance gate, equal to validate_state's per-axis tolerance so a
-# solve is accepted exactly when validation would pass it. The Newton loop
-# itself polishes two decades further so accepted solves clear the gate
+# solve is accepted exactly when validation would pass it. The least-squares
+# solve itself polishes well past this so accepted solves clear the gate
 # with margin rather than landing on it.
 _LOOP_TOLERANCE = 1e-6
 
@@ -880,45 +881,45 @@ def _solve_closed_loops(
             rows.extend(joint_values[axis] for axis in locked[closure])
         return np.asarray(rows, dtype=np.float64)
 
+    # Limits become solver bounds, except on a full-circle hinge: its
+    # coordinate is periodic, so it solves unbounded and wraps afterwards
+    # rather than stopping at a seam that is not a physical wall.
+    lower_bounds = np.asarray(
+        [
+            -np.inf if bound is None or wraps else bound[0]
+            for bound, wraps in zip(limits, periodic, strict=True)
+        ],
+        dtype=np.float64,
+    )
+    upper_bounds = np.asarray(
+        [
+            np.inf if bound is None or wraps else bound[1]
+            for bound, wraps in zip(limits, periodic, strict=True)
+        ],
+        dtype=np.float64,
+    )
+
     values = np.zeros(len(candidates), dtype=np.float64)
     # With no unknowns left -- every ring coordinate supplied by the caller --
-    # there is nothing to iterate, but the closure residual still decides
+    # there is nothing to solve, but the closure residual still decides
     # whether the supplied pose keeps the loop assembled.
-    steps = _LOOP_STEPS if candidates else 0
-    for step in range(1, steps + 1):
+    for step in range(1, (_LOOP_STEPS if candidates else 0) + 1):
         scale = step / _LOOP_STEPS
-        damping = 1e-6
-        for _ in range(40):
-            current = residual(scale, values)
-            error = float(np.linalg.norm(current))
-            if error < _LOOP_TOLERANCE * 1e-2:
-                break
-            jacobian = np.empty((len(current), len(values)), dtype=np.float64)
-            for index in range(len(values)):
-                # Differentiate into the feasible interval: a nudge past a
-                # limit would sample the pose the solver may not return.
-                bound = limits[index]
-                nudge = 1e-6
-                if bound is not None and not periodic[index] and values[index] + nudge > bound[1]:
-                    nudge = -1e-6
-                nudged = values.copy()
-                nudged[index] += nudge
-                jacobian[:, index] = (residual(scale, nudged) - current) / nudge
-            normal = jacobian.T @ jacobian + damping * np.eye(len(values))
-            try:
-                delta = np.linalg.solve(normal, -jacobian.T @ current)
-            except np.linalg.LinAlgError:
-                break
-            # Project the iterate itself, not just its evaluation: an iterate
-            # parked beyond a limit sees a flat residual and never comes back.
-            trial = project(values + delta)
-            if float(np.linalg.norm(residual(scale, trial))) < error:
-                values = trial
-                damping = max(damping * 0.5, 1e-9)
-            else:
-                damping *= 8.0
-                if damping > 1e6:
-                    break
+        # A trust-region solve survives the singular Jacobians of an
+        # over-center linkage, keeps every iterate inside the bounds, and
+        # differentiates into the feasible interval at a limit -- the three
+        # properties a plain Gauss-Newton loop had to be taught by hand.
+        solution = least_squares(
+            lambda unknowns, scale=scale: residual(scale, unknowns),
+            values,
+            jac="2-point",
+            bounds=(lower_bounds, upper_bounds),
+            method="dogbox",
+            ftol=1e-14,
+            xtol=1e-14,
+            gtol=1e-14,
+        )
+        values = project(solution.x)
 
     # One gate, equal to validate_state's per-axis tolerance: anything
     # accepted here passes validation, anything rejected names the loop.
