@@ -263,7 +263,7 @@ def test_pose_rejects_an_unknown_joint_position() -> None:
     base = model.rigid_body("base")
     add_box(base, "body")
     with (
-        pytest.raises(ValidationError, match="unknown or ambiguous joint position"),
+        pytest.raises(ValidationError, match="unknown joint position"),
         TestContext(model).pose(missing=1.0),
     ):
         pass
@@ -290,7 +290,12 @@ def test_pose_accepts_qualified_d6_coordinates() -> None:
     with context.pose({"motion.transX": 0.2, "motion.rotZ": 0.1}):
         assert context.part_world_position(moving)[0] == pytest.approx(0.2)
 
-    with pytest.raises(ValidationError, match="ambiguous"), context.pose({"motion": 0.2}):
+    # A multi-DOF joint has no single value; the error must teach the
+    # qualified spelling.
+    with (
+        pytest.raises(ValidationError, match=r"motion\.rotZ"),
+        context.pose({"motion": 0.2}),
+    ):
         pass
 
 
@@ -501,3 +506,112 @@ def test_absurd_dimensions_and_scale_outliers_are_warnings() -> None:
 
     assert relative_ctx.warn_if_absurd_dimensions()
     assert "extreme scale outlier" in relative_ctx.report().warnings[0]
+
+
+def _swing_arm() -> RigidBodyAssembly:
+    model = RigidBodyAssembly("swing_arm")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    arm = model.rigid_body("arm")
+    add_box(arm, "body", x=3.0)
+    model.joint(
+        "hinge",
+        body0=base,
+        body1=arm,
+        dofs=(JointDOF(JointAxis.ROT_Z, limits=(-1.0, 1.0)),),
+    )
+    model.articulation("main", root=base, joints=["hinge"])
+    return model
+
+
+def test_failed_pose_leaves_an_enclosing_state_intact() -> None:
+    model = RigidBodyAssembly("state_guard")
+    body = model.rigid_body("body")
+    add_box(body, "shape")
+    moved = model.physics_state({body: JointFrame(xyz=(2.0, 0.0, 0.0))})
+    context = TestContext(model)
+
+    with context.state(moved):
+        with pytest.raises(ValidationError, match="unknown joint position"):
+            with context.pose(bogus=1.0):
+                pass
+        assert context.part_world_position("body")[0] == pytest.approx(2.0)
+
+
+def test_nested_pose_spellings_share_one_coordinate() -> None:
+    """"hinge" and "hinge.rotZ" are the same DOF; the innermost value wins."""
+
+    import math as _math
+
+    context = TestContext(_swing_arm())
+
+    with context.pose(hinge=0.3), context.pose({"hinge.rotZ": 0.5}):
+        with context.pose(hinge=0.7):
+            tip = context.part_world_point("arm", (3.0, 0.0, 0.0))
+            assert tip[0] == pytest.approx(3.0 * _math.cos(0.7))
+
+
+def test_pose_rejects_out_of_limit_values_at_entry() -> None:
+    context = TestContext(_swing_arm())
+
+    with pytest.raises(ValidationError, match="outside limits"):
+        with context.pose(hinge=5.0):
+            pass
+
+
+def test_pose_sweeps_record_unreachable_loop_poses() -> None:
+    """A sweep past a ring's reachable range is a recorded failure, not a crash."""
+
+    model = _swing_arm()
+    base = model.get_rigid_body("base")
+    arm = model.get_rigid_body("arm")
+    model.joint(
+        "second_pin",
+        body0=base,
+        frame0=JointFrame(xyz=(1.0, 0.0, 0.0)),
+        body1=arm,
+        frame1=JointFrame(xyz=(1.0, 0.0, 0.0)),
+        dofs=(JointDOF(JointAxis.ROT_Z),),
+    )
+    context = TestContext(model)
+
+    poses = context.sample_joint("hinge")
+    assert not context.expect_no_collision_at_poses("base", "arm", poses=poses)
+
+    failures = context.report().failures
+    assert failures and "unreachable" in failures[0].details
+
+
+def test_separation_check_handles_multi_dof_joints() -> None:
+    model = RigidBodyAssembly("multi_dof_baseline")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    moving = model.rigid_body("moving")
+    add_box(moving, "body")
+    model.joint(
+        "wrist",
+        body0=base,
+        body1=moving,
+        dofs=(
+            JointDOF(JointAxis.ROT_X, limits=(-0.4, 0.4)),
+            JointDOF(JointAxis.ROT_Y, limits=(-0.4, 0.4)),
+        ),
+    )
+    model.articulation("main", root=base, joints=["wrist"])
+    context = TestContext(model)
+
+    assert context.fail_if_articulation_separates_child()
+
+
+def test_open_mesh_buried_in_a_solid_reads_as_collision() -> None:
+    model = RigidBodyAssembly("buried")
+    outer = model.rigid_body("outer")
+    add_box(outer, "solid")
+    inner = model.rigid_body("inner")
+    sheet = BoxGeometry((0.2, 0.2, 0.2))
+    inner.add(MeshGeometry(sheet.vertices, sheet.faces[:-1]), name="open_sheet")
+    fixed(model, "mount", outer, inner)
+    context = TestContext(model)
+
+    assert context.expect_collision("outer", "inner")
+    assert not context.expect_no_collision("outer", "inner")

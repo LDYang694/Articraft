@@ -464,7 +464,10 @@ def _collide_entries(
     overlap_depth = _bounds_overlap_depth(entry_a.bounds, entry_b.bounds)
     if not collided and all(depth > 0.0 for depth in overlap_depth):
         solid_intersection = _solid_intersection_volume(entry_a, entry_b)
-        collided = solid_intersection is not None and solid_intersection > 0.0
+        if solid_intersection is not None:
+            collided = solid_intersection > 0.0
+        else:
+            collided = _open_mesh_buried(entry_a.world_mesh, entry_b.world_mesh)
     contacts = tuple(_contact_info(contact) for contact in getattr(result, "contacts", []) or [])
     return CollisionQuery(
         part_a=entry_a.part_name,
@@ -532,6 +535,56 @@ def _solid_intersection_volume(
     entry_b: _CollisionEntry,
 ) -> float | None:
     return _mesh_intersection_volume(entry_a.world_mesh, entry_b.world_mesh)
+
+
+def _open_mesh_buried(mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh) -> bool:
+    """Whether a mesh hides entirely inside a watertight one.
+
+    Surface collision misses full containment, and the boolean volume needs
+    two watertight operands. One watertight side is still decisive: with no
+    surface crossing, the other mesh is either wholly inside it or wholly
+    outside, so a few of its vertices answer for all of them. Two open
+    meshes stay undecidable and report no collision.
+    """
+
+    for container, contents in ((mesh_a, mesh_b), (mesh_b, mesh_a)):
+        if not container.is_watertight:
+            continue
+        vertices = np.asarray(contents.vertices, dtype=np.float64)
+        probes = vertices[:: max(1, len(vertices) // 8)][:8]
+        inside = _ray_parity_inside(container, probes)
+        if len(inside) and int(np.count_nonzero(inside)) * 2 > len(inside):
+            return True
+    return False
+
+
+def _ray_parity_inside(mesh: trimesh.Trimesh, points: np.ndarray) -> np.ndarray:
+    """Point-in-watertight-mesh by ray crossing parity (Moller-Trumbore).
+
+    Self-contained on purpose: trimesh's own containment queries require the
+    optional rtree package. A handful of probe points against every triangle
+    is cheap, and the caller takes a majority vote so one edge-grazing ray
+    cannot decide the answer alone.
+    """
+
+    triangles = np.asarray(mesh.triangles, dtype=np.float64)
+    origin_edge = triangles[:, 1] - triangles[:, 0]
+    far_edge = triangles[:, 2] - triangles[:, 0]
+    direction = np.asarray((0.2743, 0.6712, 0.6886), dtype=np.float64)
+    perpendicular = np.cross(direction, far_edge)
+    determinant = np.einsum("ij,ij->i", origin_edge, perpendicular)
+    valid = np.abs(determinant) > 1e-12
+    safe_det = np.where(valid, determinant, 1.0)
+    inside = np.zeros(len(points), dtype=bool)
+    for index, point in enumerate(points):
+        offset = point - triangles[:, 0]
+        u = np.einsum("ij,ij->i", offset, perpendicular) / safe_det
+        cross = np.cross(offset, origin_edge)
+        v = (cross @ direction) / safe_det
+        t = np.einsum("ij,ij->i", far_edge, cross) / safe_det
+        hits = valid & (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > 1e-9)
+        inside[index] = bool(np.count_nonzero(hits) % 2)
+    return inside
 
 
 def _meshes_have_overlapping_bounds(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:

@@ -32,7 +32,7 @@ from articraft.sdk.assembly import (
     RigidBodyAssembly,
 )
 from articraft.sdk.bodies import RigidBody, RigidBodyRef
-from articraft.sdk.errors import ValidationError
+from articraft.sdk.errors import LoopClosureError, ValidationError
 from articraft.sdk.mass import resolve_mass
 from articraft.sdk.materials import LIBRARY
 
@@ -362,25 +362,42 @@ class TestContext:
         articulation_positions: Mapping[object, float] | None = None,
         **kwargs: float,
     ) -> Iterator[None]:
-        previous = dict(self._pose)
-        previous_state = self._state
-        self._state = None
-        updates: dict[str, float] = {}
-        position_joints = {
-            joint.dof_id(dof): joint for joint in self.model.joints for dof in joint.dofs
+        # Everything is validated and canonicalized to DOF ids before any
+        # context state changes: a rejected pose must leave an enclosing
+        # state() or pose() block exactly as it found it, and two spellings
+        # of the same DOF -- "hinge" and "hinge.rotZ" -- must be one key.
+        dofs = {
+            joint.dof_id(dof): (joint, dof) for joint in self.model.joints for dof in joint.dofs
         }
-        position_joints.update(
-            {joint.name: joint for joint in self.model.joints if len(joint.dofs) == 1}
-        )
+        aliases = {
+            joint.name: joint.dof_id(joint.dofs[0])
+            for joint in self.model.joints
+            if len(joint.dofs) == 1
+        }
+        updates: dict[str, float] = {}
         for key, value in {**dict(articulation_positions or {}), **kwargs}.items():
             name = _articulation_name(key)
-            joint = position_joints.get(name)
-            if joint is None:
-                raise ValidationError(f"unknown or ambiguous joint position: {name!r}")
+            dof_id = aliases.get(name, name)
+            entry = dofs.get(dof_id)
+            if entry is None:
+                known = sorted(set(aliases) | set(dofs))
+                raise ValidationError(
+                    f"unknown joint position {name!r}; "
+                    f"pose one of the joint names or DOF ids {known!r}"
+                )
+            joint, dof = entry
             self._reject_unposable(joint.name)
-            updates[name] = _finite(value, "joint position")
+            position = _finite(value, "joint position")
+            if dof.limits is not None and not dof.limits[0] <= position <= dof.limits[1]:
+                raise ValidationError(
+                    f"joint position {dof_id!r} is outside limits {dof.limits!r}"
+                )
+            updates[dof_id] = position
+        previous = dict(self._pose)
+        previous_state = self._state
+        self._pose.update(updates)
+        self._state = None
         try:
-            self._pose.update(updates)
             yield
         finally:
             self._pose = previous
@@ -496,9 +513,10 @@ class TestContext:
         )
         if not values:
             raise ValidationError("positions must contain at least one joint value")
+        dof_id = joint.dof_id(joint.dofs[0])
         return tuple(
             PoseSample(
-                positions=tuple(sorted({**self._pose, joint.name: value}.items())),
+                positions=tuple(sorted({**self._pose, dof_id: value}.items())),
                 label=f"{joint.name}={value:.6g}",
             )
             for value in values
@@ -698,8 +716,14 @@ class TestContext:
     ) -> bool:
         failures: list[str] = []
         for index, pose in enumerate(_pose_dicts(poses)):
-            with self.pose(pose):
-                query = self._collision_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
+            try:
+                with self.pose(pose):
+                    query = self._collision_query(
+                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
+                    )
+            except LoopClosureError as exc:
+                failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
+                continue
             if query.collided:
                 failures.append(f"sample={index} pose={pose!r} {_collision_details(query)}")
         return self._record(
@@ -730,8 +754,14 @@ class TestContext:
         failures: list[str] = []
         measured: list[float] = []
         for index, pose in enumerate(_pose_dicts(poses)):
-            with self.pose(pose):
-                result = self._distance_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
+            try:
+                with self.pose(pose):
+                    result = self._distance_query(
+                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
+                    )
+            except LoopClosureError as exc:
+                failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
+                continue
             measured.append(result.distance)
             if result.distance < minimum or (maximum is not None and result.distance > maximum):
                 failures.append(f"sample={index} pose={pose!r} {_distance_details(result)}")
@@ -760,8 +790,14 @@ class TestContext:
         tolerance = _non_negative(contact_tol, "contact_tol")
         failures: list[str] = []
         for index, pose in enumerate(_pose_dicts(poses)):
-            with self.pose(pose):
-                result = self._distance_query(part_a, part_b, shape_a=shape_a, shape_b=shape_b)
+            try:
+                with self.pose(pose):
+                    result = self._distance_query(
+                        part_a, part_b, shape_a=shape_a, shape_b=shape_b
+                    )
+            except LoopClosureError as exc:
+                failures.append(f"sample={index} pose={pose!r} unreachable: {exc}")
+                continue
             if not result.collided and result.distance > tolerance:
                 failures.append(f"sample={index} pose={pose!r} {_distance_details(result)}")
         return self._record(
@@ -791,9 +827,13 @@ class TestContext:
         margin = _non_negative(margin, "margin")
         failures: list[str] = []
         for sample_index, pose in enumerate(_pose_dicts(poses)):
-            with self.pose(pose):
-                inner_bounds = self._bounds(inner_name, inner_shape)
-                outer_bounds = self._bounds(outer_name, outer_shape)
+            try:
+                with self.pose(pose):
+                    inner_bounds = self._bounds(inner_name, inner_shape)
+                    outer_bounds = self._bounds(outer_name, outer_shape)
+            except LoopClosureError as exc:
+                failures.append(f"sample={sample_index} pose={pose!r} unreachable: {exc}")
+                continue
             failed_axes = [
                 axis_name
                 for axis_name in axis_names
@@ -880,8 +920,10 @@ class TestContext:
         min_distance = _non_negative(min_distance, "min_distance")
         maximum = None if max_distance is None else _non_negative(max_distance, "max_distance")
         check_name = name or _check_name("expect_distance", result)
+        # A malformed bound is a mistake in the test, not in the model: raise,
+        # exactly as expect_distance_at_poses and expect_metric do.
         if maximum is not None and maximum < min_distance:
-            return self._record(check_name, False, "max_distance must be >= min_distance")
+            raise ValidationError("max_distance must be greater than or equal to min_distance")
         ok = result.distance >= min_distance and (maximum is None or result.distance <= maximum)
         upper = "inf" if maximum is None else f"{maximum:.6g}"
         return self._record(
@@ -929,7 +971,7 @@ class TestContext:
             f"expect_gap({positive_name},{negative_name},axis={axis_name}{selectors})"
         )
         if maximum is not None and maximum < minimum:
-            return self._record(check_name, False, "max_gap must be >= min_gap")
+            raise ValidationError("max_gap must be greater than or equal to min_gap")
         ok = gap >= minimum and (maximum is None or gap <= maximum)
         upper = "inf" if maximum is None else f"{maximum:.6g}"
         return self._record(
@@ -1207,21 +1249,37 @@ class TestContext:
         for articulation in self.model.joints:
             if articulation.body0 is WORLD or articulation.body1 is WORLD:
                 continue
-            if not any(cast(JointAxis, dof.axis).is_rotational for dof in articulation.dofs):
+            swept = next(
+                (dof for dof in articulation.dofs if cast(JointAxis, dof.axis).is_rotational),
+                None,
+            )
+            if swept is None:
                 continue
             if articulation.name in closers:
                 continue
             parent = _part_name(cast(RigidBody, articulation.body0).name, field_name="parent")
             child = _part_name(cast(RigidBody, articulation.body1).name, field_name="child")
-            values = _articulation_sweep_values(articulation, samples)
-            with self.pose({articulation.name: values[0]}):
-                rest_gap = self.distance_between(parent, child).distance
-            worst_gap, worst_value = rest_gap, values[0]
-            for value in values[1:]:
-                with self.pose({articulation.name: value}):
-                    gap = self.distance_between(parent, child).distance
-                if gap > worst_gap:
-                    worst_gap, worst_value = gap, value
+            # Pose by the swept DOF's qualified id: a bare joint name only
+            # resolves for single-DOF joints, and this joint may carry six.
+            dof_id = articulation.dof_id(swept)
+            values = _articulation_sweep_values(articulation, samples, swept)
+            gaps: list[tuple[float, float]] = []
+            for value in values:
+                try:
+                    with self.pose({dof_id: value}):
+                        gaps.append((self.distance_between(parent, child).distance, value))
+                except LoopClosureError:
+                    # The ring cannot reach this sweep value; there is no pose
+                    # here for the child to separate in.
+                    continue
+            if not gaps:
+                self.warn(
+                    f"articulation separation sweep skipped {articulation.name!r}: "
+                    "no sweep value within its limits closes the loop"
+                )
+                continue
+            rest_gap = gaps[0][0]
+            worst_gap, worst_value = max(gaps, key=lambda item: item[0])
             if worst_gap - rest_gap > gap_tol:
                 findings.append(
                     f"articulation={articulation.name!r} "
@@ -1577,14 +1635,17 @@ def _pose_dicts(
     return result
 
 
-def _articulation_sweep_values(articulation: Joint, samples: int) -> list[float]:
+def _articulation_sweep_values(
+    articulation: Joint, samples: int, dof: JointDOF | None = None
+) -> list[float]:
     """Joint values to sample across an articulation's motion range.
 
     The first value is the rest pose. A bounded joint sweeps lower..upper; a
     continuous or unbounded joint samples a half turn (0..pi), which is enough to
     reveal a child that separates as it rotates.
     """
-    dof = articulation.dofs[0] if articulation.dofs else None
+    if dof is None:
+        dof = articulation.dofs[0] if articulation.dofs else None
     if dof is None:
         return [0.0]
     if dof.limits is not None:
@@ -1596,7 +1657,12 @@ def _articulation_sweep_values(articulation: Joint, samples: int) -> list[float]
         return [0.0]
     if high <= low:
         return [low]
-    return [low + (high - low) * index / (samples - 1) for index in range(samples)]
+    # Clamp against float overshoot: the last step can land a hair past the
+    # upper limit and a strict limit check would reject the joint's own range.
+    return [
+        min(max(low + (high - low) * index / (samples - 1), low), high)
+        for index in range(samples)
+    ]
 
 
 def _articulation_name(value: object) -> str:
