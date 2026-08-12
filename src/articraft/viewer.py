@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
-from pxr import Usd
+from pxr import Usd, UsdPhysics
 
 from articraft import package_dir
 
@@ -97,8 +97,24 @@ def _read_version(path: Path) -> dict[str, object]:
         ).GetChildren()
     ]
 
-    articulations = [_read_joint(joint) for joint in object_prim.GetChild("joints").GetChildren()]
-    _orient_joints(articulations)
+    joint_prims = object_prim.GetChild("joints").GetChildren()
+    articulations = [_read_joint(joint) for joint in joint_prims]
+    roots = {
+        _attribute(body, "name", body.GetName())
+        for body in (
+            object_prim.GetChild("rigid_bodies") or object_prim.GetChild("parts")
+        ).GetChildren()
+        if body.HasAPI(UsdPhysics.ArticulationRootAPI)
+    }
+    for joint in joint_prims:
+        if not joint.HasAPI(UsdPhysics.ArticulationRootAPI):
+            continue
+        endpoints = {_attribute(joint, "body0"), _attribute(joint, "body1")}
+        roots.update(endpoint for endpoint in endpoints if endpoint not in {None, "WORLD"})
+    _orient_joints(articulations, roots)
+    can_pose = all(
+        not joint["closes_loop"] and bool(joint["previewable"]) for joint in articulations
+    )
 
     return {
         "id": path.stem,
@@ -107,6 +123,7 @@ def _read_version(path: Path) -> dict[str, object]:
             "name": _attribute(object_prim, "name", object_prim.GetName()),
             "parts": parts,
             "articulations": articulations,
+            "can_pose": can_pose,
         },
     }
 
@@ -147,7 +164,7 @@ def _read_joint(joint: Usd.Prim) -> dict[str, object]:
         # A loop closing joint is a constraint, not a place to hang the child;
         # the viewer must not reparent or pose along it.
         "closes_loop": bool(_usd_attribute(joint, "physics:excludeFromArticulation", False)),
-        "driven": False,
+        "previewable": joint_type == "fixed" or dof is not None,
     }
 
 
@@ -178,19 +195,23 @@ def _read_legacy_joint(joint: Usd.Prim) -> dict[str, object]:
         "axis": _attribute(joint, "axis", [0.0, 0.0, 1.0]),
         "motion_limits": limits,
         "closes_loop": bool(_usd_attribute(joint, "physics:excludeFromArticulation", False)),
-        "driven": _attribute(joint, "driven", "false") == "true",
+        "previewable": _attribute(joint, "driven", "false") != "true",
     }
 
 
-def _orient_joints(joints: list[dict[str, object]]) -> None:
+def _orient_joints(joints: list[dict[str, object]], roots: set[object]) -> None:
     """Point every tree joint away from the root.
 
     ``body0``/``body1`` are symmetric in the assembly, but the viewer hangs the
     child off the parent, so a joint authored the other way round would build a
     cycle. Walk the tree and swap the ends that point backwards.
     """
-    pending = [joint for joint in joints if not joint["closes_loop"]]
-    seen: set[object] = set()
+    pending = [
+        joint
+        for joint in joints
+        if not joint["closes_loop"] and "WORLD" not in (joint["parent"], joint["child"])
+    ]
+    seen = set(roots)
     while pending:
         reachable = [j for j in pending if j["parent"] in seen or j["child"] in seen]
         if not reachable:  # first joint, or the start of a separate component
@@ -201,6 +222,11 @@ def _orient_joints(joints: list[dict[str, object]]) -> None:
                 joint["parent"], joint["child"] = joint["child"], joint["parent"]
                 joint["origin"], joint["child_origin"] = joint["child_origin"], joint["origin"]
                 joint["axis"] = [-value for value in cast(list[float], joint["axis"])]
+                limits = cast(dict[str, float | None] | None, joint["motion_limits"])
+                if limits is not None:
+                    lower, upper = limits["lower"], limits["upper"]
+                    limits["lower"] = None if upper is None else -upper
+                    limits["upper"] = None if lower is None else -lower
             seen.update((joint["parent"], joint["child"]))
         pending = [joint for joint in pending if joint not in reachable]
 

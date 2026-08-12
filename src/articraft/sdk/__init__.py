@@ -68,7 +68,7 @@ from articraft.sdk.assembly import (
     RigidBodyAssembly,
 )
 from articraft.sdk.bodies import RigidBody
-from articraft.sdk.errors import SDKError, ValidationError
+from articraft.sdk.errors import LoopClosureError, SDKError, ValidationError
 from articraft.sdk.mass import MassProperties
 from articraft.sdk.materials import Material
 from articraft.sdk.physics import EARTH_GRAVITY, BodyState, PhysicsScene
@@ -124,6 +124,7 @@ __all__ = [
     "LatheGeometry",
     "LineOverlay",
     "LoftGeometry",
+    "LoopClosureError",
     "MassProperties",
     "Material",
     "MeridionalSectionView",

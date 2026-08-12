@@ -25,7 +25,7 @@ def run_tests() -> TestReport:
     return ctx.report()
 ```
 
-Every shape needs a unique name within its part. A color can contain RGB or RGBA values from
+Every shape needs a unique name within its body. A color can contain RGB or RGBA values from
 zero through one.
 
 Within one rigid body, overlapping shapes count as connected -- `leg_1` overlaps up into `top`
@@ -69,7 +69,7 @@ Read only the reference that applies to the next piece of geometry:
 
 - Errors and validation: `docs/sdk/common/10_errors.md`.
 - Shared units and types: `docs/sdk/common/20_core_types.md`.
-- Named shapes and parts: `docs/sdk/common/30_assembly.md`.
+- Assemblies, rigid bodies, and named shapes: `docs/sdk/common/30_assembly.md`.
 - Articulations: `docs/sdk/common/35_joints.md`.
 - Materials and mass: `docs/sdk/common/37_materials.md`.
 - Simulation settings, gravity and initial motion:

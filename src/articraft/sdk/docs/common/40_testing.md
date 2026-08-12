@@ -1,7 +1,7 @@
 # Testing geometry and assemblies
 
-`TestContext` records checks against an `RigidBodyAssembly`. The checks use the same named
-shapes, part transforms, and meter scale that the USDZ exporter uses.
+`TestContext` records checks against a `RigidBodyAssembly`. The checks use the same named
+shapes, body transforms, and meter scale that the USDZ exporter uses.
 
 Every `main.py` must define `run_tests()` and return a `TestReport`.
 
@@ -46,10 +46,15 @@ curved surface between those bounds.
 ctx = TestContext(object_model, mesh_tolerance=0.001)
 ```
 
-`model` must be an `RigidBodyAssembly`. `mesh_tolerance` must be positive and finite.
+`model` must be a `RigidBodyAssembly`. `mesh_tolerance` must be positive and finite.
 
-Part arguments accept a `RigidBody` or its name. Shape arguments use the unique shape name within the
-given part. A missing part or shape raises `ValidationError`.
+Body selectors accept a `RigidBody` or its name. Shape selectors use the unique shape name within the
+given body. A missing body or shape raises `ValidationError`.
+
+`ctx.pose({...})` temporarily applies tree DOF values and solves unspecified
+coordinates needed by closed loops. `ctx.state(physics_state)` instead uses a
+complete authoritative `PhysicsState`; use it for maximal-coordinate states,
+multiple articulation trees, or poses recorded by a physics backend.
 
 ## Reports
 
@@ -441,18 +446,17 @@ The compile worker runs `run_tests()` first. It then copies authored overlap, is
 health allowances into a new context and runs these baseline checks before export:
 
 1. `check_model_valid()`
-2. `check_single_root_part()`
-3. `fail_if_mesh_unhealthy()`
-4. `fail_if_parts_have_no_mass()` (only while the physics lane is enabled)
-5. `fail_if_isolated_parts()`
-6. `warn_if_part_contains_disconnected_geometry_islands()`
-7. `warn_if_absurd_dimensions()`
-8. `fail_if_parts_overlap_in_current_pose()`
-9. `fail_if_articulation_separates_child()`
+2. `fail_if_mesh_unhealthy()`
+3. `fail_if_parts_have_no_mass()` (only while the physics lane is enabled)
+4. `fail_if_isolated_parts()`
+5. `warn_if_part_contains_disconnected_geometry_islands()`
+6. `warn_if_absurd_dimensions()`
+7. `fail_if_parts_overlap_in_current_pose()`
+8. `fail_if_articulation_separates_child()`
 
-If model validity or the root check fails, the worker stops the rest of the baseline pass. When the
-object is valid enough to inspect, model validity, the single root rule, mesh health, missing mass
-properties, and USDZ validation can block the compiler. The other baseline methods appear as nonblocking diagnostics.
+If model validity fails, the worker stops the rest of the baseline pass. When the object is valid
+enough to inspect, model validity, mesh health, missing mass properties, and USDZ validation can
+block the compiler. The other baseline methods appear as nonblocking diagnostics.
 Add an authored check when one of those findings is important to the requested object.
 The failed check still makes the compile fail and prevents final publication.
 
@@ -462,9 +466,10 @@ duplicate failures, warnings, and allowance strings are also merged.
 
 ### Model validity and root policy
 
-`check_model_valid()` calls `object_model.validate()`. The object must contain valid named
-geometry and form one rooted articulation tree. `check_single_root_part()` records the root policy
-as its own check.
+`check_model_valid()` calls `object_model.validate()`. The assembly must contain valid named
+geometry and form one connected physical joint graph. Each authored articulation validates its own
+root and selected tree; maximal-coordinate assemblies and multiple articulations do not have one
+global root.
 
 ### Physical isolation
 

@@ -541,15 +541,15 @@ def test_merge_test_reports_deduplicates_compiler_owned_checks() -> None:
     )
     baseline = TestReport(
         passed=False,
-        checks_run=2,
-        checks=("check_model_valid", "check_single_root_part"),
+        checks_run=1,
+        checks=("check_model_valid",),
         failures=(TestFailure("check_model_valid", "compiler result"),),
         warnings=("one", "two"),
     )
 
     merged = _merge_test_reports(authored, baseline)
 
-    assert merged.checks == ("custom", "check_model_valid", "check_single_root_part")
+    assert merged.checks == ("custom", "check_model_valid")
     assert merged.failures == (TestFailure("check_model_valid", "compiler result"),)
     assert merged.warnings == ("one", "two")
     assert merged.allowances == ("allow",)

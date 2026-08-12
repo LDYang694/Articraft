@@ -25,7 +25,6 @@ MuJoCo is an optional dependency. Install it with ``uv sync --group sim``.
 from __future__ import annotations
 
 import math
-import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,27 +74,19 @@ class SimulationUnavailable(RuntimeError):
     """MuJoCo is not installed."""
 
 
+class SimulationCapabilityError(ValueError):
+    """The exported graph uses constraints this MuJoCo translator cannot preserve."""
+
+
 @dataclass(frozen=True)
 class Trajectory:
-    """The simulated motion, in the terms the viewer already understands.
-
-    The viewer poses an object by moving joints, so a recording is the joint
-    values over time. It pins the root at the origin, which simulation does not,
-    so the root's pose travels alongside.
-    """
+    """Authoritative world-space body poses recorded from a simulation."""
 
     fps: float
-    root: str
-    joint_names: tuple[str, ...]
     frames: tuple[dict[str, Any], ...]
 
     def to_payload(self) -> dict[str, Any]:
-        return {
-            "fps": self.fps,
-            "root": self.root,
-            "joints": list(self.joint_names),
-            "frames": list(self.frames),
-        }
+        return {"fps": self.fps, "frames": list(self.frames)}
 
 
 @dataclass(frozen=True)
@@ -243,7 +234,10 @@ class _Scene:
         children = {joint.child for joint in self.tree_joints}
         roots = [name for name in self.parts if name not in children]
         if len(roots) != 1:
-            raise ValueError(f"expected exactly one root part, found {roots}")
+            raise SimulationCapabilityError(
+                "MuJoCo simulation requires one spanning articulation tree; "
+                f"found root bodies {roots!r}"
+            )
         return roots[0]
 
 
@@ -283,7 +277,8 @@ def simulate_usdz(
     mujoco.mj_forward(model, data)
 
     names = tuple(
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, index) for index in range(1, model.nbody)
+        str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, index))
+        for index in range(1, model.nbody)
     )
     start = data.xpos[1:].copy()
     separations = _tracked_body_separations(
@@ -325,12 +320,18 @@ def simulate_usdz(
     def frame(time: float) -> dict[str, Any]:
         return {
             "t": round(time, 4),
-            # MuJoCo quaternions are (w, x, y, z).
-            "root": {
-                "pos": [round(float(value), 6) for value in data.xpos[root_body]],
-                "quat": [round(float(value), 6) for value in data.xquat[root_body]],
+            "bodies": {
+                name: {
+                    "pos": [round(float(value), 6) for value in data.xpos[index]],
+                    # MuJoCo quaternions are (w, x, y, z).
+                    "quat": [round(float(value), 6) for value in data.xquat[index]],
+                }
+                for index, name in enumerate(names, start=1)
             },
-            "joints": [round(float(data.qpos[model.jnt_qposadr[index]]), 6) for index in movable],
+            "dofs": {
+                name: round(float(data.qpos[model.jnt_qposadr[index]]), 6)
+                for name, index in zip(joint_names, movable, strict=True)
+            },
         }
 
     deepest = 0.0
@@ -398,8 +399,6 @@ def simulate_usdz(
         expected_friction=touching,
         trajectory=Trajectory(
             fps=fps,
-            root=str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, root_body)),
-            joint_names=joint_names,
             frames=tuple(frames),
         ),
     )
@@ -469,6 +468,16 @@ def write_mjcf(usdz: Path, out_dir: Path) -> Path:
     if stage is None:
         raise ValueError(f"could not open {usdz}")
     scene = _read_scene(stage)
+    unsupported_closures = [
+        joint.name
+        for joint in scene.joints
+        if joint.excluded and (joint.kind == "slide" or joint.extra_axes)
+    ]
+    if unsupported_closures:
+        raise SimulationCapabilityError(
+            "MuJoCo translation cannot preserve prismatic or multi-DOF loop constraints: "
+            + ", ".join(repr(name) for name in unsupported_closures)
+        )
     root = scene.root()
 
     lowest = _lowest_point(scene)
@@ -499,15 +508,6 @@ def write_mjcf(usdz: Path, out_dir: Path) -> Path:
     if closures:
         equality = ET.SubElement(mujoco_el, "equality")
         for joint in closures:
-            if joint.kind == "slide":
-                # A point constraint cannot carry a sliding pin; leave it to
-                # engines with native prismatic loop constraints.
-                warnings.warn(
-                    f"prismatic loop closure {joint.name!r} is not enforced in MuJoCo; "
-                    "the loop simulates open",
-                    stacklevel=2,
-                )
-                continue
             # MuJoCo's default equality impedance is sized for light objects;
             # a multi tonne linkage sags visibly on it. A stiff pin is the
             # honest reading of a physical pin.

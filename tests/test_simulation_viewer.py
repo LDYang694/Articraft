@@ -67,9 +67,9 @@ def test_a_recorded_trajectory_reaches_the_viewer(tmp_path: Path) -> None:
     trajectory = version["trajectory"]
 
     assert isinstance(trajectory, dict)
-    assert trajectory["root"] == "base"
-    assert trajectory["joints"] == ["lid_hinge"]
     assert len(trajectory["frames"]) > 1
+    assert set(trajectory["frames"][0]["bodies"]) == {"base", "lid"}
+    assert set(trajectory["frames"][0]["dofs"]) == {"lid_hinge"}
 
 
 def test_the_viewer_sees_no_trajectory_until_the_run_is_simulated(tmp_path: Path) -> None:
@@ -91,10 +91,11 @@ def test_recorded_quaternions_are_unit_and_wxyz_ordered(tmp_path: Path) -> None:
 
     assert result.trajectory is not None
     for frame in result.trajectory.frames:
-        quaternion = frame["root"]["quat"]
-        assert len(quaternion) == 4
-        assert sum(value * value for value in quaternion) == pytest.approx(1.0, abs=1e-3)
-        assert abs(quaternion[0]) > 0.9  # w first, and near-upright throughout
+        for pose in frame["bodies"].values():
+            quaternion = pose["quat"]
+            assert len(quaternion) == 4
+            assert sum(value * value for value in quaternion) == pytest.approx(1.0, abs=1e-3)
+            assert abs(quaternion[0]) > 0.9  # w first, and near-upright throughout
 
 
 def test_the_object_falls_to_the_floor_over_the_recording(tmp_path: Path) -> None:
@@ -103,5 +104,5 @@ def test_the_object_falls_to_the_floor_over_the_recording(tmp_path: Path) -> Non
 
     assert result.trajectory is not None
     frames = result.trajectory.frames
-    assert frames[-1]["root"]["pos"][2] < frames[0]["root"]["pos"][2]
+    assert frames[-1]["bodies"]["base"]["pos"][2] < frames[0]["bodies"]["base"]["pos"][2]
     assert frames[-1]["t"] > frames[0]["t"]

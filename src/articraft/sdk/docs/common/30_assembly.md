@@ -1,72 +1,46 @@
 # Assemblies and rigid bodies
 
-`RigidBodyAssembly` is the root model. It owns rigid bodies and the joints
-that connect them.
+`RigidBodyAssembly` is the authored physical asset. It owns `RigidBody` values,
+physical joints, and optional articulation trees.
 
 ```python
-from articraft.sdk import RigidBodyAssembly
+from articraft.sdk import Material, RigidBodyAssembly
+
+
+model = RigidBodyAssembly("small_table")
+body = model.rigid_body("body")
+body.add(Box(0.8, 0.5, 0.04), name="top", material=Material.HARDWOOD)
 ```
 
-## Construction
+All geometry and linear physics values use meters.
+
+## `RigidBodyAssembly`
 
 ```python
-RigidBodyAssembly(name: str)
+RigidBodyAssembly(name: str, *, scene: PhysicsScene = PhysicsScene())
 ```
 
-The name must be a nonempty string. Leading and trailing whitespace is removed.
-There is no `units` argument. The model always uses meters, and
-`model.meters_per_unit` is always `1.0`.
-
-`model.rigid_bodies` and `model.joints` are public lists for inspection. Use
-the authoring helpers below instead of appending to them directly.
-
-## The authoring order
-
-Build a model in this order:
-
-1. Create the `RigidBodyAssembly`.
-2. Create every rigid `RigidBody` with `model.rigid_body(...)`.
-3. Add one or more named shapes to each part.
-4. Add articulations between parts.
-5. Add design checks and call `model.validate()` before export.
-
-Parent and child parts must already exist when an articulation is added.
-
-## `model.rigid_body(...)`
+The name must be nonempty. The assembly exposes its authored
+`rigid_bodies`, `joints`, and `articulations` for inspection. Create entries
+through `rigid_body(...)`, `joint(...)`, and `articulation(...)` so references
+are resolved immediately and duplicate names fail where they are authored.
 
 ```python
 model.rigid_body(
     name: str,
     *,
     mass_properties: MassProperties | None = None,
-    body_state: BodyState | None = None,
-) -> Part
+) -> RigidBody
 ```
 
-This method creates a `RigidBody`, appends it to `model.rigid_bodies`, and returns it. Part
-names must be unique within the model.
+`PhysicsScene` sets gravity for the exported stage. `MassProperties` overrides
+mass inferred from shape geometry and `Material`. A body's optional `BodyState`
+sets its initial rigid-body flags and velocity.
 
-```python
-body = model.rigid_body("body")
-head = model.rigid_body("head")
-```
+## `RigidBody` and `body.add(...)`
 
-An empty part is allowed while the model is being built. Full model validation
-requires every part to contain at least one named shape.
-
-## `RigidBody`
-
-```python
-Part(name: str)
-```
-
-Each part is one rigid body. Put geometry that must move together in the same
-part. A decorative trim piece should stay in the same part as its housing when
-they never move relative to each other.
-
-Create a separate part only when the geometry needs a separate rigid motion.
-
-### `body.add(...)`
+One `RigidBody` contains all geometry that moves together. Use another body
+only when the geometry needs independent rigid motion.
 
 ```python
 body.add(
@@ -79,203 +53,99 @@ body.add(
 ) -> build123d.Shape | MeshGeometry
 ```
 
-`name` is required and must be unique within this part. The same shape name may
-be used on a different part. The method returns the exact geometry object that
-was passed in.
+Shape names are unique within one body. Build123d and mesh geometry both use
+the body's local coordinates; apply `Pos`, `Rot`, `Location`, or a mesh
+transform before calling `add(...)`. There is no second per-shape transform.
 
-The optional color has three RGB values or four RGBA values. Values range from
-zero through one. RGB gets an alpha value of one.
-
-```python
-from build123d import Box, Cylinder, Pos
-
-
-body = model.rigid_body("body")
-shell = Box(0.30, 0.22, 0.28)
-trim = Pos(Z=0.15) * Cylinder(0.09, 0.02)
-
-body.add(shell, name="shell", color=(0.70, 0.10, 0.10))
-body.add(trim, name="top_trim", color=(0.80, 0.80, 0.82, 0.70))
-```
-
-This creates one rigid part with two named shapes and two colors. It does not
-create two rigid bodies.
-
-### Materials
-
-`material` says what a shape is made of, which settles its mass, how it behaves
-on contact, and how it looks. `coating` covers it in a different material, and
-`color` tints one shape without changing anything physical.
+`material` supplies density, contact properties, and appearance. `coating`
+changes the surface material without replacing the core density. `color`
+tints the displayed surface.
 
 ```python
-body.add(shell, name="shell", material=Material.ALUMINUM)
-bar.add(rail, name="rail", material=Material.STEEL, coating=Material.RUBBER)
-foot.add(pad, name="foot", material=Material.RUBBER, color=(0.8, 0.1, 0.1))
+from build123d import Box, Pos
+
+housing = model.rigid_body("housing")
+housing.add(Box(0.30, 0.22, 0.08), name="shell", material=Material.ALUMINUM)
+housing.add(
+    Pos(X=0.12) * Box(0.08, 0.02, 0.02),
+    name="handle",
+    material=Material.ABS_PLASTIC,
+)
 ```
 
-Shapes on one part may be different materials; the part weighs each in turn. See
-`docs/sdk/common/37_materials.md` for the library, deriving variants, and what
-gets measured.
+Overlapping shapes within one body are allowed and count as connected. Extend
+a protrusion's own end slightly into the surface it meets instead of adding a
+decorative patch to hide a gap.
 
-### Build123d placement
+Use `body.get_shape(name)` to retrieve an authored shape and
+`model.get_rigid_body(body_or_name)` to retrieve a body.
 
-A build123d shape keeps its current build123d location. Apply `Pos`, `Rot`, or
-another build123d `Location` before adding it.
+## Resolution
 
 ```python
-from build123d import Box, Pos, Rot
-
-
-handle = Pos(X=0.12, Z=0.04) * Rot(Y=20.0) * Box(0.08, 0.02, 0.02)
-body.add(handle, name="handle")
+resolved = model.resolve()
 ```
 
-The `Pos` values are treated as meters by Articraft. Build123d `Rot` uses
-degrees. There is no second per shape transform in `RigidBody`.
+`resolve()` validates the authored graph and returns an immutable
+`ResolvedRigidBodyAssembly`. Export, collision, testing, rendering, and
+kinematics consume this same resolved view. It contains:
 
-### Mesh geometry
+- every rigid body and physical joint;
+- each validated articulation tree;
+- the derived `exclude_from_articulation` status of every joint;
+- the validated zero-configuration `reference_state`;
+- the assembly `PhysicsScene`.
 
-`MeshGeometry` uses the same part local frame.
+Do not author `exclude_from_articulation` yourself. A selected articulation
+joint is included; another joint incident to an articulated body is exported as
+an excluded regular constraint.
+
+## Physics states
+
+`PhysicsState` stores one world transform per body. Body poses are authoritative;
+DOF positions are optional metadata checked against those poses.
 
 ```python
-from articraft.sdk import BoxGeometry
-
-
-badge = BoxGeometry((0.05, 0.002, 0.02)).translate(0.0, -0.111, 0.03)
-body.add(badge, name="badge", color=(0.85, 0.65, 0.12))
+state = model.physics_state(
+    {
+        base: JointFrame(xyz=(0.0, 0.0, 0.0)),
+        lid: lid_world_matrix,
+    }
+)
 ```
 
-The part stores the mesh object itself. If you edit that mesh later, the part
-sees the edit. `model.validate()` validates the edited vertices and faces
-again.
+`resolved.forward_kinematics({...})` is the convenience path for an articulation
+tree. In a closed loop, supplied coordinates drive and unspecified coordinates
+are solved to keep excluded constraints closed. Use a complete `PhysicsState`
+for maximal-coordinate graphs, multiple trees without one spanning kinematic
+tree, or poses supplied by a physics backend.
 
-### `body.get_shape(...)`
+## Validation
 
-```python
-part.get_shape(name: str) -> build123d.Shape | MeshGeometry
-```
+`model.validate()` calls `resolve()` and returns `None` on success. Validation
+requires:
 
-This method returns the named geometry object. It raises `ValidationError` when
-the name is empty or unknown.
+- at least one body, with a unique nonempty name and one valid named shape;
+- unique joint and articulation names;
+- finite joint frames and valid endpoints;
+- one connected physical joint graph;
+- each selected articulation to be a connected acyclic tree;
+- each body and selected joint to belong to at most one articulation;
+- every joint constraint and DOF limit to hold in the reference state.
 
-```python
-housing = model.get_rigid_body("body").get_shape("shell")
-```
+Zero articulations are valid for a maximal-coordinate USD assembly. Multiple
+non-overlapping articulations are also valid; consumers that cannot derive one
+complete pose from their trees require a complete `PhysicsState`.
 
-Use the part and shape name together when a test or inspection command must
-target one feature.
+## USD layout
 
-## Local and world coordinates
-
-Every shape on a part uses that part's local coordinates.
-
-The root part frame is the world frame at rest. A child part frame comes from
-its parent articulation. At a zero motion value, the child frame is the
-articulation `Origin` relative to the parent.
-
-Do not place child geometry twice. Author the child around its own local frame,
-then use the articulation origin to place that frame on the parent.
-
-The transform details are in [articulations](35_joints.md).
-
-## `model.get_rigid_body(...)`
-
-```python
-model.get_rigid_body(part: str | Part) -> Part
-```
-
-Pass a part name or a `RigidBody`. The method resolves the name against this model
-and returns the stored part. It raises `ValidationError` for an unknown part.
-
-## `model.get_joint(...)`
-
-```python
-model.get_joint(name: str | Articulation) -> Articulation
-```
-
-Pass an articulation name or an `Articulation`. The method returns the stored
-articulation with that name. It raises `ValidationError` when no match exists.
-
-## `model.validate()`
-
-```python
-model.validate() -> None
-```
-
-Validation does not return a repaired model. It returns `None` on success and
-raises `ValidationError` on failure.
-
-Validation checks all of these rules:
-
-- The model has at least one part.
-- Every entry in `model.rigid_bodies` is a `RigidBody`.
-- Every part has a nonempty unique name.
-- Every part has at least one named nonempty shape.
-- Every build123d shape is nonempty and valid.
-- Every `MeshGeometry` has valid finite vertices and triangle indices.
-- Every shape color has three or four values in the allowed range, and every
-  shape material is a valid `Material`.
-- Part names are unique.
-- Every entry in `model.joints` is an `Articulation`.
-- Articulation names are unique.
-- Every articulation satisfies its type and limit rules.
-- Every parent and child name refers to a part in this model.
-- A part has at most one parent articulation.
-- The model has exactly one root part.
-- Every part is reachable from that root, so cycles and detached branches are
-  invalid.
-
-A model with one part and no articulation is valid. That part is the root.
-
-Validation checks the authored connection tree. Compile time geometry checks
-also look for physically isolated parts and unintended overlaps. See [testing
-geometry and assemblies](40_testing.md) for those checks.
-
-## Naming rules
-
-Object, part, shape, and articulation names must be strings. The SDK removes
-leading and trailing whitespace and rejects an empty result.
-
-Uniqueness has these scopes:
-
-- Part names are unique within one model.
-- Articulation names are unique within one model.
-- Shape names are unique within one part.
-
-Use short stable names because test failures, compile signals, JSON records,
-and USD metadata report them.
-
-## Export layout
-
-Each part exports as one USD rigid body. Each named shape exports as a child
-mesh with its own name and color.
+Each body is a sibling rigid-body prim. Named shapes remain children of their
+body:
 
 ```text
-/World/<object>/parts/<part>/shapes/<shape>
+/World/<assembly>/rigid_bodies/<body>/shapes/<shape>
 ```
 
-An articulation targets the parent and child part bodies, not their individual
-shape meshes. The USD stage uses meters and Z up.
-
-## Complete mixed geometry example
-
-```python
-from build123d import Box
-
-from articraft.sdk import RigidBodyAssembly, BoxGeometry
-
-
-model = RigidBodyAssembly("mixed_body")
-body = model.rigid_body("body")
-
-body.add(Box(0.30, 0.20, 0.08), name="housing", color=(0.25, 0.30, 0.36))
-
-feet = BoxGeometry((0.24, 0.14, 0.02)).translate(0.0, 0.0, -0.05)
-body.add(feet, name="feet", color=(0.05, 0.05, 0.06))
-
-model.validate()
-object_model = model
-```
-
-See `docs/sdk/examples/mixed_articulated_assembly.py` for a model with a moving
-mesh part.
+Joints live under `/World/<assembly>/joints`. This flat physical layout does
+not encode a parent/child hierarchy; an articulation is solver configuration,
+not asset ownership.

@@ -252,7 +252,7 @@ def test_prompt_and_docs_state_the_new_authoring_contract() -> None:
         "build123d",
         "MeshGeometry",
         "name=",
-        "Origin",
+        "JointFrame",
         "JointDOF",
         "realistic geometry",
         "primary mechanisms",

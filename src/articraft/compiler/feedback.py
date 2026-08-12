@@ -325,12 +325,6 @@ _FAILURE_SPECS: dict[FailureKind, _FailureSpec] = {
         compiler_summary="Compiler model validation failed.",
         compiler_group="build",
     ),
-    FailureKind.SINGLE_ROOT: _FailureSpec(
-        "single_root_policy",
-        "SINGLE_ROOT_POLICY",
-        "The model must have exactly one root part.",
-        compiler_group="build",
-    ),
     FailureKind.MESH_HEALTH: _FailureSpec(
         "mesh_health",
         "MESH_HEALTH",
@@ -577,7 +571,6 @@ def _primary_issue(signal: CompileSignal) -> str:
         "compile_timeout": "the compile exceeded its time limit.",
         "missing_run_tests": "generated script is missing required run_tests().",
         "invalid_run_tests_report": "run_tests() returned the wrong type.",
-        "single_root_policy": "compiler-owned root policy failed.",
         "model_validity": "compiler-owned model validation failed.",
         "mesh_health": "compiler-owned mesh health validation failed.",
         "isolated_part": (
@@ -619,7 +612,7 @@ _RULES_BY_KIND = {
         ),
         _RUNTIME_RULES,
     ),
-    **dict.fromkeys(("single_root_policy", "model_validity"), _STRUCTURE_RULES),
+    "model_validity": _STRUCTURE_RULES,
     "mesh_health": (
         "- Repair the named mesh issue at its source and compile again.",
         "- Use `allow_mesh_issues(...)` only when the exact issue on the exact named shape "
@@ -702,7 +695,7 @@ def _inspection_advice(kind: str) -> str:
         return "Inspect the named compile phase and the densest operation in that phase before editing."
     if kind in {"compile_runtime", "missing_run_tests", "invalid_run_tests_report"}:
         return "Use one short `exec_command` inspection of the exception location or API before editing."
-    if kind in {"single_root_policy", "model_validity"}:
+    if kind == "model_validity":
         return "Use one short `exec_command` inspection of the model structure before editing."
     return "Use one short `exec_command` inspection of the named geometry or support path before editing."
 
@@ -751,7 +744,6 @@ def _signal_sort_key(signal: CompileSignal) -> tuple[int, int, str, str, str, st
         "missing_run_tests": 0,
         "invalid_run_tests_report": 0,
         "model_validity": 1,
-        "single_root_policy": 1,
         "mesh_health": 2,
         "isolated_part": 2 if signal.source == "compiler" else 6,
         "disconnected_geometry": 2 if signal.source == "compiler" else 6,

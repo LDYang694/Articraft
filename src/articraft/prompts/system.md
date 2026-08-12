@@ -27,16 +27,16 @@ Four requirements guide every design choice.
    construction when the real object needs them. Tessellate curved surfaces
    finely enough to read smooth rather than faceted.
 2. PRIMARY MECHANISMS. Model the main motion a person expects from the object.
-   Use the matching articulation type and plausible motion limits. Add separate
+   Use the matching joint freedoms and plausible motion limits. Add separate
    moving controls when they are important to the object's identity or use. Do
    not add decorative motion.
-3. NO FLOATING PARTS. Every part and every separate piece of geometry must
-   physically connect to the object. Overlap within one rigid part is free and
+3. NO FLOATING PARTS. Every rigid body and every separate piece of geometry must
+   physically connect to the object. Overlap within one rigid body is free and
    counts as connected, so attach a protrusion by extending its OWN end a few
    millimeters into the surface it meets. Never add a separate piece whose only
    job is to close a gap. Use an explicit test allowance only when separation is
    a real part of the requested design.
-4. NO UNINTENDED OVERLAPS. Keep distinct parts separate when the design calls for
+4. NO UNINTENDED OVERLAPS. Keep distinct bodies separate when the design calls for
    separation. Small local overlap is acceptable for a captured pin, seated
    insert, nested part, or compressed interface. Give each intentional case a
    precise test allowance and a check that proves the intended relationship.
@@ -114,8 +114,8 @@ are met.
 `object_model` must be a `articraft.sdk.RigidBodyAssembly`. `run_tests()`
 must return a `articraft.sdk.TestReport`.
 
-Import build123d authoring names from `build123d`. Import public object, mesh,
-articulation, and testing names from `articraft.sdk`. Choose imports after
+Import build123d authoring names from `build123d`. Import public assembly, mesh,
+joint, and testing names from `articraft.sdk`. Choose imports after
 you choose the geometry strategy. Do not import private SDK modules, the larger
 Articraft package, viewer code, storage code, or data libraries.
 
@@ -125,13 +125,13 @@ it lacks an operation, create a small local module such as
 build123d, NumPy, trimesh, Pillow, and the Python standard library. Keep one-off
 object logic local. Do not modify the installed SDK during a run.
 
-Keep exact and freeform work separate when that preserves quality. A part may
+Keep exact and freeform work separate when that preserves quality. A rigid body may
 contain both build123d shapes and mesh shapes. For a mesh shell, derive matching
 inner and outer sections from the same frames so their boundaries and wall
 thickness stay aligned. Make through cutters cross their target surface
 cleanly. Do not rely on nearly tangent or coincident booleans.
 
-Create geometry through parts. The exact API is:
+Create geometry through rigid bodies. The exact API is:
 
 ```python
 model = RigidBodyAssembly("object_name")
@@ -139,11 +139,11 @@ base = model.rigid_body("base")
 base.add(shape, name="body", material=Material.STEEL)
 ```
 
-`Part.add` accepts a build123d shape or a public mesh geometry value. The `name`
-argument is required and must be unique within the part. Say what each shape is
+`RigidBody.add` accepts a build123d shape or a public mesh geometry value. The `name`
+argument is required and must be unique within the body. Say what each shape is
 made of with `material=Material.STEEL` (or `ALUMINUM`, `ABS_PLASTIC`, `GLASS`,
 `HARDWOOD`, `RUBBER`): one word settles the shape's mass, its behavior on
-contact, and how it looks. Different shapes on one part may be different
+contact, and how it looks. Different shapes on one body may be different
 materials. Use `coating=Material.RUBBER` when the outside is a different
 material from the inside -- a rubber grip on a steel bar is heavy like steel and
 grippy like rubber. Add `color=` to tint one shape. For anything more, derive a
@@ -165,7 +165,7 @@ joints, and that makes the mechanism a ring rather than a chain -- linkages,
 four-bars, parallel grippers, scissor mechanisms and folding braces all are.
 Author every joint the mechanism physically has, then leave the ring-closing one
 out of the articulation. Authoring a ring as a chain is a modelling error: the
-parts export and then flap loose under simulation.
+bodies export and then flap loose under simulation.
 
 The two frames of a joint coincide at rest, so place each in its own body's
 coordinates. All linear values are meters. Use radians for `JointFrame.rpy` and

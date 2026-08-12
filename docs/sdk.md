@@ -8,8 +8,8 @@ mesh rotations use radians. Build123d rotations use degrees.
 
 ## Create an object
 
-An `RigidBodyAssembly` contains rigid parts. Each part contains one or more named shapes. Put
-shapes in the same part if they always move together.
+A `RigidBodyAssembly` contains rigid bodies. Each body contains one or more named shapes. Put
+shapes in the same body if they always move together.
 
 ```python
 from build123d import Box
@@ -29,13 +29,13 @@ result = export_assembly(model, "output")
 print(result.usdz)
 ```
 
-Each shape must have a name. The name must be unique in its part. A shape can also have an RGB
+Each shape must have a name. The name must be unique in its body. A shape can also have an RGB
 or RGBA color.
 
 ## Select a geometry type
 
 Use build123d for exact solids, cuts, and fillets. Also use it for work that depends on faces or
-edges. Add the completed build123d shape directly to a part.
+edges. Add the completed build123d shape directly to a rigid body.
 
 Use `MeshGeometry` to edit vertices or make a procedural surface. Also use it for mesh booleans
 and mesh repair. The SDK has builders for common solids and curved forms. It also has profiles,
@@ -54,7 +54,7 @@ model.rigid_body("body").add(housing, name="housing", color=(0.25, 0.30, 0.36))
 mesh. They return the same object, so you can use a sequence of transforms. Use `copy()` first if
 you must keep the source mesh.
 
-Build123d and mesh geometry use the same local coordinates in a part. Use
+Build123d and mesh geometry use the same body-local coordinates. Use
 `build123d_to_mesh()` only if a build123d shape must enter a mesh operation.
 
 ## Add motion
@@ -82,31 +82,32 @@ model.joint(
 model.articulation("main", root="body", joints=["body_to_lid"])
 ```
 
-Make child geometry in the local frame of the child part. The articulation origin puts that
-frame in the parent frame. A model must have one root part. Each other part must have one path to
-the root part.
+Place each joint endpoint with a `JointFrame` in that body's local coordinates.
+The two frames coincide at zero. `body0` and `body1` are symmetric; the
+articulation independently selects the solver's rooted spanning tree. Closed
+loops author every physical joint and omit the closing constraint from that tree.
 
 ## Check and export the object
 
-`model.validate()` checks names, geometry values, articulation rules, and the part tree.
+`model.validate()` checks names, geometry, the physical graph, articulation trees, and reference state.
 `TestContext` checks physical relations such as distance, overlap, support, and motion.
 
 The compiler also does these tests:
 
-- It finds isolated parts.
+- It finds isolated bodies.
 - It finds disconnected geometry.
 - It finds scale problems.
 - It finds unwanted overlap.
 - It finds joints that separate during motion.
 
 USDZ export is in `articraft.sdk.export`. Thus, a normal SDK import does not load OpenUSD.
-Each part becomes one rigid body. Each named shape keeps its mesh and color.
+Each `RigidBody` becomes one USD rigid body. Each named shape keeps its mesh and material.
 
 ## Reference
 
 - Start with the [SDK quickstart](../src/articraft/sdk/docs/common/00_quickstart.md).
-- Read the [object and part API](../src/articraft/sdk/docs/common/30_assembly.md).
-- Read the [articulation API](../src/articraft/sdk/docs/common/35_joints.md).
+- Read the [assembly and rigid-body API](../src/articraft/sdk/docs/common/30_assembly.md).
+- Read the [joint and articulation API](../src/articraft/sdk/docs/common/35_joints.md).
 - Read the [test API](../src/articraft/sdk/docs/common/40_testing.md).
 - Read the [USDZ export API](../src/articraft/sdk/docs/common/50_usdz_export.md).
 - Read the [mesh API](../src/articraft/sdk/docs/mesh/00_mesh_geometry.md).

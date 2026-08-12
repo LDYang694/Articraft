@@ -28,7 +28,6 @@ from pxr import (  # pyright: ignore[reportAttributeAccessIssue]
 )
 
 from articraft.sdk import ambientcg
-from articraft.sdk._collision import _rpy_matrix
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
 from articraft.sdk.assembly import (
     WORLD,
@@ -775,6 +774,10 @@ def _set_joint_frame_attrs(schema, frame0: JointFrame, frame1: JointFrame) -> No
     schema.CreateLocalRot0Attr(_quat(_gf_matrix(_rpy_matrix(frame0.rpy))))
     schema.CreateLocalPos1Attr(Gf.Vec3f(*frame1.xyz))
     schema.CreateLocalRot1Attr(_quat(_gf_matrix(_rpy_matrix(frame1.rpy))))
+
+
+def _rpy_matrix(rpy: tuple[float, float, float]) -> np.ndarray:
+    return np.asarray(trimesh.transformations.euler_matrix(*rpy, axes="sxyz"), dtype=np.float64)
 
 
 def _write_articulation_roots(

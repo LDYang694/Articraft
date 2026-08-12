@@ -1,8 +1,8 @@
 # Joints and articulations
 
-Motion is two steps. A **joint** connects two rigid bodies and says which
-freedoms they have. An **articulation** names the tree of joints the simulator
-solves; anything left out of it closes a loop.
+A `Joint` is a physical constraint. An `Articulation` is a reduced-coordinate
+tree selected from those joints. Keeping them separate is what lets one physical
+assembly contain closed loops.
 
 ```python
 from articraft.sdk import WORLD, JointAxis, JointDOF, JointFrame
@@ -17,28 +17,26 @@ JointFrame(
 )
 ```
 
-Where the joint sits **in one body's own coordinates**, in meters and radians.
-Every joint has two: one per body. They coincide at rest, so placing them is how
-you say "these two points are pinned together."
+Every joint has one local frame per endpoint. The two frames coincide in the
+authored zero configuration. `xyz` is meters and `rpy` is extrinsic XYZ roll,
+pitch, and yaw in radians.
 
-`rpy` is roll, pitch, then yaw, applied in that order. Rotating a frame is also
-how you get an axis the six named ones do not cover: to hinge about the
-diagonal `(1, 1, 0)`, yaw the frame 45 degrees and use its own X.
+Rotating a frame expresses an axis that is not aligned with the body's axes. To
+hinge about a diagonal in the XY plane, yaw the frame and use its local X axis.
 
-## `JointDOF`
+## `JointDOF` and `JointAxis`
 
 ```python
 JointDOF(axis: JointAxis, limits: tuple[float, float] | None = None)
 ```
 
-One freedom the joint allows. `JointAxis` has six members — `TRANS_X`,
-`TRANS_Y`, `TRANS_Z`, `ROT_X`, `ROT_Y`, `ROT_Z` — and any axis you do not list
-is locked.
+`JointAxis` names the six USD D6 axes: `TRANS_X`, `TRANS_Y`, `TRANS_Z`,
+`ROT_X`, `ROT_Y`, and `ROT_Z`. Listed axes are free or limited; every unlisted
+axis is locked.
 
-`limits` is `(lower, upper)`, in meters for a linear axis and radians for a
-rotational one. **A range must contain zero**, because zero is the pose you
-authored the object in. Leave `limits` out for a free axis, such as a wheel that
-spins without end.
+Limits use meters for translation and radians for rotation. Every range must
+contain zero because the joint frames define the zero configuration. Omit
+limits for an unbounded axis.
 
 ## `model.joint(...)`
 
@@ -47,22 +45,22 @@ model.joint(
     name: str,
     *,
     body0: RigidBody | str | WORLD,
-    frame0: JointFrame,
+    frame0: JointFrame = JointFrame(),
     body1: RigidBody | str | WORLD,
-    frame1: JointFrame,
-    dofs: tuple[JointDOF, ...] = (),
+    frame1: JointFrame = JointFrame(),
+    dofs: Iterable[JointDOF] = (),
 ) -> Joint
 ```
 
-The joint kind falls out of `dofs` rather than being named:
+`body0` and `body1` are symmetric; neither means parent. One endpoint may be
+`WORLD`. A joint cannot connect `WORLD` to itself.
 
-| `dofs` | what it is |
+| DOFs | Physical joint |
 | --- | --- |
-| `()` | fixed — the bodies are welded |
-| one rotational axis | a hinge |
-| one linear axis | a slide |
-| three rotational axes | a ball joint |
-| any other combination | a general joint, exported as USD D6 |
+| none | fixed |
+| one rotational axis | revolute |
+| one translational axis | prismatic |
+| any other combination | generic D6 |
 
 ```python
 lid_hinge = model.joint(
@@ -70,13 +68,10 @@ lid_hinge = model.joint(
     body0=base,
     frame0=JointFrame(xyz=(0.0, -0.04, 0.02)),
     body1=lid,
-    frame1=JointFrame(),
+    frame1=JointFrame(xyz=(0.0, -0.04, 0.0)),
     dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.57)),),
 )
 ```
-
-`body0` and `body1` are symmetric — neither is the parent. One of them may be
-`WORLD`, which pins a body to the ground rather than to another body.
 
 ## `model.articulation(...)`
 
@@ -89,69 +84,99 @@ model.articulation(
 ) -> Articulation
 ```
 
-Names the spanning tree the simulator solves in reduced coordinates. `root` is
-the body the tree hangs from, or a `WORLD` joint that anchors it.
+A floating articulation roots at a body. A fixed articulation roots at a
+selected joint connecting one body to `WORLD`.
 
-`joints` may be omitted when the assembly is one unambiguous tree; list them
-when there is a ring, because then you are choosing which joint is left out.
+The selected joints must form one connected acyclic tree. Selection can be
+inferred only when the assembly has one articulation and one unambiguous
+acyclic physical graph. Cycles and multiple articulations require an explicit
+joint list.
+
+Bodies may belong to at most one articulation. A physical joint may be selected
+by at most one articulation.
 
 ## Closed loops
 
-Count the pivots before writing joints. **A body pinned in two places takes two
-joints, and that makes the mechanism a ring rather than a chain.** Linkages,
-four-bars, parallel grippers, scissor mechanisms and folding braces all are.
-
-Author every joint the mechanism physically has, then leave the ring-closing one
-out of the articulation:
+A four-bar has four physical joints but its reduced-coordinate tree has three.
+Author all four constraints and select three:
 
 ```python
-model.joint("ground_left", body0=ground, frame0=JointFrame(), body1=left, frame1=JointFrame(), dofs=swing)
-model.joint("left_coupler", body0=left, frame0=JointFrame(xyz=(0.0, 0.0, RISE)), body1=coupler, frame1=JointFrame(), dofs=swing)
-model.joint("coupler_right", body0=coupler, frame0=JointFrame(xyz=(SPAN, 0.0, 0.0)), body1=right, frame1=JointFrame(xyz=(0.0, 0.0, RISE)), dofs=swing)
-model.joint("ground_right", body0=ground, frame0=JointFrame(xyz=(SPAN, 0.0, 0.0)), body1=right, frame1=JointFrame(), dofs=swing)
+swing = (JointDOF(JointAxis.ROT_Y, limits=(-1.5, 1.5)),)
 
-model.articulation("main", root=ground, joints=["ground_left", "left_coupler", "coupler_right"])
+ground_crank = model.joint(
+    "ground_crank",
+    body0=ground,
+    body1=crank,
+    dofs=swing,
+)
+crank_coupler = model.joint(
+    "crank_coupler",
+    body0=crank,
+    frame0=JointFrame(xyz=(CRANK_LENGTH, 0.0, 0.0)),
+    body1=coupler,
+    dofs=swing,
+)
+ground_rocker = model.joint(
+    "ground_rocker",
+    body0=ground,
+    frame0=JointFrame(xyz=(GROUND_SPAN, 0.0, 0.0)),
+    body1=rocker,
+    dofs=swing,
+)
+model.joint(
+    "closing_pin",
+    body0=coupler,
+    frame0=JointFrame(xyz=(COUPLER_LENGTH, 0.0, 0.0)),
+    body1=rocker,
+    frame1=JointFrame(xyz=(ROCKER_LENGTH, 0.0, 0.0)),
+    dofs=swing,
+)
+
+model.articulation(
+    "main",
+    root=ground,
+    joints=(ground_crank, crank_coupler, ground_rocker),
+)
 ```
 
-`ground_right` still exports, as a regular USD joint marked
-`physics:excludeFromArticulation`, which a physics engine enforces as the pin it
-is. `resolved.has_closed_loops` reports whether a ring was found.
+`closing_pin` remains a physical USD constraint. Resolution derives
+`exclude_from_articulation=True`, and export authors
+`physics:excludeFromArticulation = true`.
 
-Authoring a ring as a chain is a modelling error: the parts export and then flap
-loose the moment the object is simulated. See
-`docs/sdk/examples/closed_loop_linkage.py`.
+Do not pose the closing joint directly; its value follows from the body poses.
+Supply a tree DOF to `forward_kinematics(...)` or `TestContext.pose(...)` and
+the graph solver determines unspecified coordinates needed to close the ring.
+An unreachable pose raises `LoopClosureError`.
 
-**A loop-closing joint cannot be posed.** Its value is decided by the rest of
-the mechanism, so `ctx.pose({...})` rejects it — pose the tree joints instead.
-Posing a closed loop from joint values is not supported at all; supply body
-poses or let a physics engine solve it.
+```python
+state = model.resolve().forward_kinematics({"ground_crank.rotY": 0.4})
+```
 
-## `PhysicsState`
+The solver uses independent D6 coordinates and the authored constraints. It is
+a convenience for posing and geometry checks, not a dynamics backend. Closed-
+loop simulation stability still depends on the USD physics backend, timestep,
+and solver configuration.
+
+## Authoritative states
 
 ```python
 PhysicsState(body_poses, *, dof_positions=None)
 ```
 
-Where every body actually is: a 4x4 world transform per body, plus the joint
-values those poses imply. Body poses are the authority, so a state that
-disagrees with its own joints is rejected rather than quietly reinterpreted.
+`body_poses` maps every body name to a 4x4 world transform. These transforms are
+authoritative. Resolution decomposes each endpoint-relative transform in
+canonical D6 order, rejects locked-axis or limit violations, and derives DOF
+metadata.
 
-`resolved.forward_kinematics({"lid_hinge": 0.5})` builds one from joint values,
-for a tree. A closed loop cannot be posed that way and needs a full state.
+Use a complete state when poses come from a simulator or when one articulation
+tree cannot determine the whole assembly:
 
-## Frames must meet
-
-The two frames of a joint coincide at rest. If they do not, validation says so
-against the axis that disagrees:
-
-```
-physics state violates locked axis 'transX' on joint 'crank_coupler': value=-0.3
+```python
+state = model.physics_state(body_world_transforms)
+with TestContext(model).state(state):
+    ...
 ```
 
-That means the bodies are 0.3 m apart along X where the joint says they are
-pinned. Move a frame, or the geometry, until they meet.
-
-## Units
-
-Meters and radians throughout. Rotational limits are radians here and exported
-to USD as degrees; the exporter converts. Linear limits are meters both ways.
+Maximal-coordinate assemblies need no articulation. They export every joint as
+an ordinary constraint; their arbitrary runtime pose is naturally represented
+as a complete `PhysicsState`.

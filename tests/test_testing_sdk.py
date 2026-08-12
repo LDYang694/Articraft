@@ -131,6 +131,19 @@ def test_named_shape_queries_and_world_bounds() -> None:
         ctx.shape_world_bounds("root", "missing")
 
 
+def test_complete_physics_state_is_authoritative_for_geometry_queries() -> None:
+    model = RigidBodyAssembly("state")
+    body = model.rigid_body("body")
+    add_box(body, "shape")
+    state = model.physics_state({body: JointFrame(xyz=(2.0, 0.0, 0.0))})
+    context = TestContext(model)
+
+    with context.state(state):
+        assert context.part_world_bounds(body) == ((1.5, -0.5, -0.5), (2.5, 0.5, 0.5))
+
+    assert context.part_world_bounds(body) == ((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+
+
 def test_world_bounds_transform_large_mesh_without_runtime_warnings() -> None:
     model = RigidBodyAssembly("large-mesh-transform")
     root = model.rigid_body("root")
@@ -245,14 +258,39 @@ def test_pose_changes_prismatic_part_transform_and_restores() -> None:
     assert posed[0] < rest[0]
 
 
-def test_pose_rejects_an_unknown_articulation() -> None:
+def test_pose_rejects_an_unknown_joint_position() -> None:
     model = RigidBodyAssembly("pose")
     base = model.rigid_body("base")
     add_box(base, "body")
     with (
-        pytest.raises(ValidationError, match="unknown articulation"),
+        pytest.raises(ValidationError, match="unknown or ambiguous joint position"),
         TestContext(model).pose(missing=1.0),
     ):
+        pass
+
+
+def test_pose_accepts_qualified_d6_coordinates() -> None:
+    model = RigidBodyAssembly("d6_pose")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    moving = model.rigid_body("moving")
+    add_box(moving, "body")
+    model.joint(
+        "motion",
+        body0=base,
+        body1=moving,
+        dofs=(
+            JointDOF(JointAxis.TRANS_X, limits=(-0.5, 0.5)),
+            JointDOF(JointAxis.ROT_Z, limits=(-0.5, 0.5)),
+        ),
+    )
+    model.articulation("main", root=base)
+    context = TestContext(model)
+
+    with context.pose({"motion.transX": 0.2, "motion.rotZ": 0.1}):
+        assert context.part_world_position(moving)[0] == pytest.approx(0.2)
+
+    with pytest.raises(ValidationError, match="ambiguous"), context.pose({"motion": 0.2}):
         pass
 
 
@@ -430,16 +468,6 @@ def test_contact_and_isolation_checks_record_kinds() -> None:
         FailureKind.CONTACT,
         FailureKind.ISOLATED_PART,
     ]
-
-
-def test_single_root_check_records_kind() -> None:
-    model = RigidBodyAssembly("two_roots")
-    add_box(model.rigid_body("a"), "body")
-    add_box(model.rigid_body("b"), "body")
-
-    ctx = TestContext(model)
-    assert not ctx.check_single_root_part()
-    assert ctx.report().failures[0].kind is FailureKind.SINGLE_ROOT
 
 
 def test_nested_solid_shapes_are_connected_geometry() -> None:

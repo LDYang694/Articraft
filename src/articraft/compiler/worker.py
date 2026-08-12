@@ -305,7 +305,6 @@ def _run_baseline_tests(
 
     with tracker.phase("checking the model structure"):
         ctx.check_model_valid()
-        ctx.check_single_root_part()
     preliminary = ctx.report()
     if not preliminary.passed:
         return _without_allowance_notes(preliminary)
@@ -331,7 +330,6 @@ def _run_baseline_tests(
     # nothing to export, so it blocks the compile.
     blocking_kinds = {
         FailureKind.MODEL_VALIDITY,
-        FailureKind.SINGLE_ROOT,
         FailureKind.MESH_HEALTH,
         FailureKind.MISSING_MASS,
     }

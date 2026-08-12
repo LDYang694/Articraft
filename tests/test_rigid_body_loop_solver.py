@@ -156,14 +156,15 @@ def test_complete_pose_state_validates_past_a_quarter_turn() -> None:
     assert checked.dof_positions["crank_pin.rotY"] == pytest.approx(1.7)
 
 
-def _tight_ram() -> RigidBodyAssembly:
-    assembly = RigidBodyAssembly("tight_ram")
+def _hydraulic_ram(slide_limits: tuple[float, float]) -> RigidBodyAssembly:
+    assembly = RigidBodyAssembly("hydraulic_linkage")
     ground = assembly.rigid_body("ground")
     arm = assembly.rigid_body("arm")
     barrel = assembly.rigid_body("barrel")
     rod = assembly.rigid_body("rod")
     for body in (ground, arm, barrel, rod):
         body.add(Box(0.1, 0.1, 0.1), name="body")
+
     arm_length = 1.0
     barrel_pivot = (0.2, 0.0, -0.4)
     ram_length = math.dist(barrel_pivot, (arm_length, 0.0, 0.0))
@@ -181,7 +182,7 @@ def _tight_ram() -> RigidBodyAssembly:
         "slide",
         body0=barrel,
         body1=rod,
-        dofs=(JointDOF(JointAxis.TRANS_X, limits=(-0.02, 0.02)),),
+        dofs=(JointDOF(JointAxis.TRANS_X, limits=slide_limits),),
     )
     assembly.joint(
         "rod_eye",
@@ -195,10 +196,21 @@ def _tight_ram() -> RigidBodyAssembly:
     return assembly
 
 
+def test_prismatic_coordinate_follows_a_closed_loop() -> None:
+    """A hydraulic ram is a physical ring; it needs no separate drive API."""
+
+    state = _hydraulic_ram((-0.5, 0.5)).resolve().forward_kinematics({"arm_pin.rotY": 0.25})
+
+    assert abs(state.dof_positions["barrel_pin.rotY"]) > 0.01
+    assert abs(state.dof_positions["slide.transX"]) > 0.01
+
+
 def test_limited_slide_solves_inside_its_limits() -> None:
     """A limit is a wall at the boundary, not a trap for the solver inside it."""
 
-    state = _tight_ram().resolve().forward_kinematics({"arm_pin.rotY": 0.02})
+    resolved = _hydraulic_ram((-0.02, 0.02)).resolve()
+
+    state = resolved.forward_kinematics({"arm_pin.rotY": 0.02})
 
     slide = state.dof_positions["slide.transX"]
     assert -0.02 <= slide <= 0.02
@@ -207,7 +219,7 @@ def test_limited_slide_solves_inside_its_limits() -> None:
 
 def test_pose_stopped_by_a_limit_names_the_pinned_joint() -> None:
     with pytest.raises(LoopClosureError, match=r"pinned at their limits.*slide\.transX"):
-        _tight_ram().resolve().forward_kinematics({"arm_pin.rotY": 0.5})
+        _hydraulic_ram((-0.02, 0.02)).resolve().forward_kinematics({"arm_pin.rotY": 0.5})
 
 
 def test_fully_supplied_ring_that_stays_open_raises_a_loop_error() -> None:

@@ -17,7 +17,7 @@ from articraft.sdk import (
     RigidBodyAssembly,
 )
 from articraft.sdk.export import export_assembly
-from articraft.simulate import simulate_usdz, write_mjcf
+from articraft.simulate import SimulationCapabilityError, simulate_usdz, write_mjcf
 
 mujoco = pytest.importorskip("mujoco", reason="simulation needs the sim dependency group")
 
@@ -209,7 +209,7 @@ def test_releasing_a_joint_produces_motion_worth_watching(tmp_path: Path) -> Non
     )
 
     assert result.trajectory is not None
-    angles = [frame["joints"][0] for frame in result.trajectory.frames]
+    angles = [frame["dofs"]["lid_hinge"] for frame in result.trajectory.frames]
     assert max(angles) - min(angles) > 0.5  # radians
     assert result.peak_joint_speed is not None and result.peak_joint_speed > 1.0
 
@@ -272,7 +272,7 @@ def test_prismatic_travel_is_not_reported_as_part_separation(tmp_path: Path) -> 
     )
 
     assert result.trajectory is not None
-    positions = [frame["joints"][0] for frame in result.trajectory.frames]
+    positions = [frame["dofs"]["slide"] for frame in result.trajectory.frames]
     assert abs(positions[0]) > 0.005
     assert result.parts_stayed_together, result.summary()
 
@@ -375,3 +375,57 @@ def test_a_joint_authored_child_first_still_nests_under_the_root(tmp_path: Path)
     top = [body for body in root.findall(".//worldbody/body") if body.get("name") != "floor"]
     assert [body.get("name") for body in top] == ["base"]
     assert [child.get("name") for child in top[0].findall("body")] == ["arm"]
+
+
+def test_a_revolute_loop_is_preserved_as_a_mujoco_constraint(tmp_path: Path) -> None:
+    model = RigidBodyAssembly("parallel_hinges")
+    base = model.rigid_body("base")
+    base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
+    arm = model.rigid_body("arm")
+    arm.add(BoxGeometry((0.02, 0.02, 0.2)), name="post", material=Material.STEEL)
+    tree = model.joint(
+        "tree_hinge",
+        body0=base,
+        body1=arm,
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.joint(
+        "closing_hinge",
+        body0=base,
+        body1=arm,
+        dofs=(JointDOF(JointAxis.ROT_Y),),
+    )
+    model.articulation("main", root=base, joints=(tree,))
+
+    path = write_mjcf(_export(model, tmp_path), tmp_path / "sim")
+    constraint = ET.parse(path).getroot().find(".//equality/connect")
+
+    assert constraint is not None
+    assert constraint.get("name") == "closing_hinge"
+
+
+def test_an_unsupported_loop_fails_before_writing_partial_mjcf(tmp_path: Path) -> None:
+    model = RigidBodyAssembly("parallel_slides")
+    base = model.rigid_body("base")
+    base.add(BoxGeometry((0.2, 0.2, 0.05)), name="plate", material=Material.STEEL)
+    carriage = model.rigid_body("carriage")
+    carriage.add(BoxGeometry((0.05, 0.05, 0.05)), name="block", material=Material.STEEL)
+    tree = model.joint(
+        "tree_slide",
+        body0=base,
+        body1=carriage,
+        dofs=(JointDOF(JointAxis.TRANS_X),),
+    )
+    model.joint(
+        "closing_slide",
+        body0=base,
+        body1=carriage,
+        dofs=(JointDOF(JointAxis.TRANS_X),),
+    )
+    model.articulation("main", root=base, joints=(tree,))
+    output = tmp_path / "sim"
+
+    with pytest.raises(SimulationCapabilityError, match="closing_slide"):
+        write_mjcf(_export(model, tmp_path), output)
+
+    assert not output.joinpath("model.xml").exists()

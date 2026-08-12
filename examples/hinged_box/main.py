@@ -33,8 +33,8 @@ def build_object_model() -> RigidBodyAssembly:
 
     lid = model.rigid_body("lid")
     lid.add(
-        # Part geometry is authored in the part's LOCAL frame; the hinge
-        # origin (0, -0.04, 0.02) maps it into the parent. Local (0, 0.04,
+        # Body geometry is authored in the body's LOCAL frame; the two hinge
+        # frames map it into the assembly. Local (0, 0.04,
         # 0.007) therefore lands the lid at world (0, 0, 0.027): its knuckle
         # edge sits 0.5 mm into the base, a small designed embed that keeps
         # the parts physically connected (declared below with allow_overlap).

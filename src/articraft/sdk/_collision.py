@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -10,13 +11,14 @@ import numpy as np
 import trimesh
 
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
-from articraft.sdk.assembly import RigidBodyAssembly
+from articraft.sdk.assembly import PhysicsState, RigidBodyAssembly
 from articraft.sdk.bodies import Geometry
 from articraft.sdk.errors import ValidationError
 
 Vec3: TypeAlias = tuple[float, float, float]
 Bounds: TypeAlias = tuple[Vec3, Vec3]
 Mat4: TypeAlias = np.ndarray
+Pose: TypeAlias = Mapping[str, float] | PhysicsState
 
 _NUMERICAL_CONTACT_DEPTH_TOLERANCE = 1e-6
 
@@ -102,13 +104,13 @@ class MeshCollisionKernel:
         self.mesh_tolerance = float(mesh_tolerance)
         self._mesh_cache: dict[tuple[object, ...], _LocalMesh] = {}
 
-    def part_world_position(self, part_name: str, pose: dict[str, float]) -> Vec3:
+    def part_world_position(self, part_name: str, pose: Pose) -> Vec3:
         transform = self.world_transforms(pose).get(part_name)
         if transform is None:
             raise ValidationError(f"unknown part: {part_name!r}")
         return _array_to_vec3(transform[:3, 3]) or (0.0, 0.0, 0.0)
 
-    def part_world_vertices(self, part_name: str, pose: dict[str, float]) -> np.ndarray:
+    def part_world_vertices(self, part_name: str, pose: Pose) -> np.ndarray:
         entries = self._selector_entries(part_name, None, pose)
         vertices = [entry.world_vertices for entry in entries]
         if not vertices:
@@ -116,24 +118,26 @@ class MeshCollisionKernel:
         # Bounds vertices are sufficient for all projection and bounds checks.
         return np.concatenate(vertices, axis=0)
 
-    def part_world_bounds(self, part_name: str, pose: dict[str, float]) -> Bounds:
+    def part_world_bounds(self, part_name: str, pose: Pose) -> Bounds:
         return _points_bounds(self.part_world_vertices(part_name, pose))
 
     def shape_world_bounds(
         self,
         part_name: str,
         shape_name: str,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> Bounds:
         return self._selector_entries(part_name, shape_name, pose)[0].bounds
 
-    def world_transforms(self, pose: dict[str, float]) -> dict[str, Mat4]:
+    def world_transforms(self, pose: Pose) -> dict[str, Mat4]:
         """Where every body sits, for a pose keyed by joint or by DOF."""
 
+        if isinstance(pose, PhysicsState):
+            return self.resolved.world_transforms(pose)
         state = self.resolved.forward_kinematics(self._dof_positions(pose))
         return self.resolved.world_transforms(state)
 
-    def _dof_positions(self, pose: dict[str, float]) -> dict[str, float]:
+    def _dof_positions(self, pose: Mapping[str, float]) -> dict[str, float]:
         """Accept ``{"hinge": 0.5}`` as well as ``{"hinge.rotZ": 0.5}``.
 
         A joint with one degree of freedom is named unambiguously by the joint
@@ -152,7 +156,7 @@ class MeshCollisionKernel:
         self,
         part_a: str,
         part_b: str,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         shape_a: str | None = None,
         shape_b: str | None = None,
@@ -178,7 +182,7 @@ class MeshCollisionKernel:
         self,
         part_a: str,
         part_b: str,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         shape_a: str | None = None,
         shape_b: str | None = None,
@@ -195,7 +199,7 @@ class MeshCollisionKernel:
 
     def pair_distances(
         self,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         max_contacts: int = 16,
     ) -> list[DistanceQuery]:
@@ -219,7 +223,7 @@ class MeshCollisionKernel:
 
     def meaningful_overlaps(
         self,
-        pose: dict[str, float],
+        pose: Pose,
         *,
         overlap_tol: float,
         overlap_volume_tol: float,
@@ -301,7 +305,7 @@ class MeshCollisionKernel:
             )
         return findings
 
-    def _all_entries(self, pose: dict[str, float]) -> list[_CollisionEntry]:
+    def _all_entries(self, pose: Pose) -> list[_CollisionEntry]:
         transforms = self.world_transforms(pose)
         return [
             self._entry(part.name, shape.name, shape.geometry, transforms[part.name])
@@ -313,7 +317,7 @@ class MeshCollisionKernel:
         self,
         part_name: str,
         shape_name: str | None,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> list[_CollisionEntry]:
         part = self.resolved.get_rigid_body(part_name)
         transform = self.world_transforms(pose).get(part.name)
@@ -334,7 +338,7 @@ class MeshCollisionKernel:
         part_b: str,
         shape_a: str | None,
         shape_b: str | None,
-        pose: dict[str, float],
+        pose: Pose,
     ) -> list[tuple[_CollisionEntry, _CollisionEntry]]:
         entries_a = self._selector_entries(part_a, shape_a, pose)
         entries_b = self._selector_entries(part_b, shape_b, pose)
