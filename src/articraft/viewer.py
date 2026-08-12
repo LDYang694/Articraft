@@ -99,18 +99,19 @@ def _read_version(path: Path) -> dict[str, object]:
 
     joint_prims = object_prim.GetChild("joints").GetChildren()
     articulations = [_read_joint(joint) for joint in joint_prims]
-    roots = {
-        _attribute(body, "name", body.GetName())
-        for body in (
-            object_prim.GetChild("rigid_bodies") or object_prim.GetChild("parts")
-        ).GetChildren()
-        if body.HasAPI(UsdPhysics.ArticulationRootAPI)
-    }
+    roots: set[object] = set()
+    for body in (
+        object_prim.GetChild("rigid_bodies") or object_prim.GetChild("parts")
+    ).GetChildren():
+        if body.HasAPI(UsdPhysics.ArticulationRootAPI):
+            roots.add(str(_attribute(body, "name", body.GetName())))
     for joint in joint_prims:
         if not joint.HasAPI(UsdPhysics.ArticulationRootAPI):
             continue
-        endpoints = {_attribute(joint, "body0"), _attribute(joint, "body1")}
-        roots.update(endpoint for endpoint in endpoints if endpoint not in {None, "WORLD"})
+        for endpoint_name in ("body0", "body1"):
+            endpoint = _attribute(joint, endpoint_name)
+            if isinstance(endpoint, str) and endpoint != "WORLD":
+                roots.add(endpoint)
     _orient_joints(articulations, roots)
     can_pose = all(
         not joint["closes_loop"] and bool(joint["previewable"]) for joint in articulations
