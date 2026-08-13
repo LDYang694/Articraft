@@ -1,33 +1,33 @@
 # Assemblies and rigid bodies
 
-`RigidBodyAssembly` is the authored physical asset. It owns `RigidBody` values,
-physical joints, and optional articulation trees.
+Use `RigidBodyAssembly` as the complete physical object. It contains rigid bodies, physical
+joints, and optional articulation trees.
 
 ```python
 from articraft.sdk import Material, RigidBodyAssembly
-
 
 model = RigidBodyAssembly("small_table")
 body = model.rigid_body("body")
 body.add(Box(0.8, 0.5, 0.04), name="top", material=Material.HARDWOOD)
 ```
 
-All geometry and linear physics values use meters.
+Use meters for all geometry and linear physics values.
 
 ## `RigidBodyAssembly`
+
+Create an assembly with a name and an optional physics scene:
 
 ```python
 RigidBodyAssembly(name: str, *, scene: PhysicsScene = PhysicsScene())
 ```
 
-Assembly, rigid body, joint, and articulation names must be identifiers --
-letters, digits, and underscores, not starting with a digit -- because they
-travel verbatim into USD prim paths, DOF ids, and the manifest. Shape names
-are display labels and may be any nonempty string. The assembly exposes its
-authored `rigid_bodies`, `joints`, and `articulations` for inspection. Create
-entries through `rigid_body(...)`, `joint(...)`, and `articulation(...)` so
-references are resolved immediately and duplicate names fail where they are
-authored.
+Assembly, body, joint, and articulation names must be Python style identifiers. Use letters,
+digits, and underscores, but do not start with a digit.
+
+The exporter uses these names in USD paths, degree of freedom identifiers, and the manifest.
+Shape names can be any nonempty string.
+
+Create bodies through `rigid_body(...)`:
 
 ```python
 model.rigid_body(
@@ -38,15 +38,20 @@ model.rigid_body(
 ) -> RigidBody
 ```
 
-`PhysicsScene` sets gravity for the exported stage. `MassProperties` overrides
-mass inferred from shape geometry and `Material`. A body's optional `BodyState`
-sets its initial rigid-body flags and velocity; see
-[simulation settings](38_simulation_settings.md).
+`MassProperties` can replace mass values from geometry and materials. `BodyState` sets the
+initial flags and velocity of the body.
+
+Read [simulation settings](38_simulation_settings.md) for `PhysicsScene` and `BodyState`.
+
+The assembly exposes `rigid_bodies`, `joints`, and `articulations` for inspection. Use its
+creation methods so duplicate names fail immediately.
 
 ## `RigidBody` and `body.add(...)`
 
-One `RigidBody` contains all geometry that moves together. Use another body
-only when the geometry needs independent rigid motion.
+Put all geometry that moves together in one `RigidBody`. Create another body only when the
+geometry needs independent motion.
+
+Add a named shape to a body:
 
 ```python
 body.add(
@@ -59,13 +64,14 @@ body.add(
 ) -> build123d.Shape | MeshGeometry
 ```
 
-Shape names are unique within one body. Build123d and mesh geometry both use
-the body's local coordinates; apply `Pos`, `Rot`, `Location`, or a mesh
-transform before calling `add(...)`. There is no second per-shape transform.
+Shape names must be unique within a body. Build123d shapes and meshes both use body local
+coordinates.
 
-`material` supplies density, contact properties, and appearance. `coating`
-changes the surface material without replacing the core density. `color`
-tints the displayed surface.
+Apply a build123d or mesh transform before you call `add(...)`. The body does not store another
+transform for each shape.
+
+`material` accepts a `Material` that supplies density, contact values, and appearance. `coating`
+changes the surface without changing the core density. `color` applies a display tint.
 
 ```python
 from build123d import Box, Pos
@@ -79,32 +85,39 @@ housing.add(
 )
 ```
 
-Overlapping shapes within one body are allowed and count as connected. Extend
-a protrusion's own end slightly into the surface it meets instead of adding a
-decorative patch to hide a gap.
+Shapes in one body can overlap. Overlap a protrusion with its supporting surface to keep the
+body connected.
 
-Use `body.shape(name)` to retrieve an authored shape and
-`model.get_rigid_body(body_or_name)` to retrieve a body.
+Use `body.shape(name)` to get a shape. Use `model.get_rigid_body(body_or_name)` to get a body.
 
-## Geometry-anchored frames
+## Geometry frames
+
+Bind a local frame to a body with `body.at(...)`:
 
 ```python
 body.at(source=None) -> BodyFrame
 ```
 
-`body.at(...)` binds a local frame to that body. `source` may be a three-number
-point, `JointFrame`, build123d `Location`, `Plane`, `Axis`, `Face`, `Edge`,
-`Vertex`, or `Shape`, or a `MeshGeometry`. The feature direction becomes
-frame-local Z. Flat faces use their center and normal; rotational faces --
-cylinders, cones, spheres, tori -- use their axis of symmetry, positioned where
-the face sits along it, so a bore or pin surface anchors the hinge that spins
-about it. Straight and freeform edges use their midpoint and tangent; circles,
-arcs, and ellipses use the axis through their center, normal to their plane.
-Axes use their position and direction. Whole shapes and meshes use their
-bounding-box center. Build123d locations are converted from their exact
-transform, including their degree-based rotation convention.
+`source` accepts these values:
 
-Use build123d's ordinary topology queries instead of copying coordinates:
+- A point with three numbers.
+- A `JointFrame`.
+- A build123d `Location`, `Plane`, or `Axis`.
+- A build123d `Face`, `Edge`, `Vertex`, or `Shape`.
+- A `MeshGeometry`.
+
+The feature direction becomes the local Z axis of the frame. A flat face uses its center and
+normal.
+
+A rotational face uses its symmetry axis. A straight edge uses its midpoint and tangent.
+
+A circle, arc, or ellipse uses the normal through its center. A complete shape or mesh uses
+the center of its bounds.
+
+Build123d locations keep their complete transform. The conversion also keeps the build123d
+degree convention.
+
+Use build123d topology queries instead of copied coordinates:
 
 ```python
 from build123d import Axis
@@ -114,41 +127,44 @@ top_frame = housing_body.at(top)
 hinge_axis = lid_body.at(lid_shape.edges().filter_by(Axis.X)[0])
 ```
 
-`WORLD.at(...)` creates the world endpoint. A raw `JointFrame` is the compact
-USD-local value used when exact numbers are already the clearest input.
+Use `WORLD.at(...)` to create a world endpoint. Use a raw `JointFrame` when exact numbers are
+the clearest input.
+
+Convert an existing frame to other body coordinates with `frame_in(...)`:
 
 ```python
 model.frame_in(source: BodyFrame, body: RigidBody | WORLD = WORLD) -> BodyFrame
 ```
 
-`frame_in(...)` expresses the same reference-state frame in another body's
-coordinates. It is useful for deriving the second endpoint of a closure or
-fixed mount without repeating transform arithmetic.
+Use this method to derive the second endpoint of a closure or fixed mount. It avoids duplicate
+transform calculations.
 
-## Resolution
+## Resolve the assembly
+
+Resolve the authored graph before a consumer uses it:
 
 ```python
 resolved = model.resolve()
 ```
 
-`resolve()` validates the authored graph and returns an immutable
-`ResolvedRigidBodyAssembly`. Export, collision, testing, rendering, and
-kinematics consume this same resolved view. It contains:
+`resolve()` returns an immutable `ResolvedRigidBodyAssembly`. Export, testing, rendering,
+collision checks, and motion use this same result.
 
-- every rigid body and physical joint;
-- each validated articulation tree;
-- the derived `exclude_from_articulation` status of every joint;
-- the validated zero-configuration `reference_state`;
-- the assembly `PhysicsScene`.
+The result contains these values:
 
-Do not author `exclude_from_articulation` yourself. A selected articulation
-joint is included; another joint incident to an articulated body is exported as
-an excluded regular constraint.
+- Every rigid body and physical joint.
+- Each validated articulation tree.
+- The derived `exclude_from_articulation` value for each joint.
+- The validated reference `PhysicsState`.
+- The assembly `PhysicsScene`.
+
+Do not set `exclude_from_articulation` yourself. Resolution derives it from the articulation
+trees.
 
 ## Physics states
 
-`PhysicsState` stores one world transform per body. Body poses are authoritative;
-DOF positions are optional metadata checked against those poses.
+`PhysicsState` stores one world transform for each body. Body poses are authoritative. Degree
+of freedom positions are optional checked metadata.
 
 ```python
 state = model.physics_state(
@@ -159,38 +175,39 @@ state = model.physics_state(
 )
 ```
 
-`resolved.forward_kinematics({...})` is the convenience path for an articulation
-tree. In a closed loop, supplied coordinates drive and unspecified coordinates
-are solved to keep excluded constraints closed. Use a complete `PhysicsState`
-for maximal-coordinate graphs, multiple trees without one spanning kinematic
-tree, or poses supplied by a physics backend.
+Use `resolved.forward_kinematics({...})` for an articulation tree. The loop solver finds
+unspecified positions that keep closed constraints together.
 
-## Validation
+Use a complete `PhysicsState` when one tree cannot define the complete pose. Also use it for
+poses from a physics engine.
 
-`model.validate()` calls `resolve()` and returns `None` on success. Validation
-requires:
+## Validate the assembly
 
-- at least one body, with a unique nonempty name and one valid named shape;
-- unique joint and articulation names;
-- finite joint frames and valid endpoints;
-- one connected physical joint graph;
-- each selected articulation to be a connected acyclic tree;
-- each body and selected joint to belong to at most one articulation;
-- every joint constraint and DOF limit to hold in the reference state.
+`model.validate()` calls `resolve()` and returns `None` when validation passes.
 
-Zero articulations are valid for a maximal-coordinate USD assembly. Multiple
-non-overlapping articulations are also valid; consumers that cannot derive one
-complete pose from their trees require a complete `PhysicsState`.
+Validation applies these rules:
+
+- The assembly has at least one body.
+- Each body has a unique name and one valid named shape.
+- Joint and articulation names are unique.
+- Joint frames are finite and endpoints are valid.
+- The physical joint graph is connected.
+- Each articulation is a connected tree without a cycle.
+- A body or selected joint belongs to no more than one articulation.
+- The reference state satisfies all constraints and limits.
+
+An assembly can have no articulation. It can also have multiple separate articulations.
+
+Use a complete `PhysicsState` when articulation trees cannot define one complete pose.
 
 ## USD layout
 
-Each body is a sibling rigid-body prim. Named shapes remain children of their
+The exporter writes each body as a sibling USD rigid body. Named shapes remain below their
 body:
 
 ```text
 /World/<assembly>/rigid_bodies/<body>/shapes/<shape>
 ```
 
-Joints live under `/World/<assembly>/joints`. This flat physical layout does
-not encode a parent/child hierarchy; an articulation is solver configuration,
-not asset ownership.
+Joints are under `/World/<assembly>/joints`. This layout describes physical ownership, not an
+articulation parent and child hierarchy.

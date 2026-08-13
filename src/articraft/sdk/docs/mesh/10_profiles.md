@@ -1,11 +1,12 @@
 # Profiles and curve sampling
 
-Use this page to create two dimensional profiles, sample two or three
-dimensional curves, build side lofts, and resample side sections.
+Use this page to create two dimensional profiles and sample curves. It also documents side
+lofts and section resampling.
 
-Coordinates and lengths use meters. Arc angles use radians. Profile helpers
-return ordinary Python lists, so you can inspect or edit the points before
-building a mesh.
+Coordinates and lengths use meters. Arc angles use radians.
+
+Profile helpers return Python lists. You can inspect or edit the points before you build a
+mesh.
 
 This page documents `rounded_rect_profile`, `superellipse_profile`,
 `sample_cubic_bezier_spline_2d`, `sample_cubic_bezier_spline_3d`,
@@ -30,17 +31,18 @@ from articraft.sdk.mesh import (
 
 ## Profile conventions
 
-A two dimensional profile is a sequence of `(x, y)` points. Mesh builders
-close a profile when their `closed` argument is true, so you do not need to
-repeat the first point at the end. Consecutive duplicate points are removed by
-the builders.
+A two dimensional profile is a sequence of `(x, y)` points. When `closed=True`, do not repeat
+the first point at the end.
+
+Mesh builders remove consecutive duplicate points.
 
 The public profile generators on this page return centered counterclockwise
 loops. Their first point is not repeated at the end.
 
-Use finite coordinates and parameters. The curve samplers convert values to
-floats but do not reject every `NaN` or infinite input before sampling. A later
-`MeshGeometry` constructor rejects nonfinite vertices.
+Use finite coordinates and parameters. Curve samplers convert values to floats, but some do
+not reject `NaN` before sampling.
+
+The `MeshGeometry` constructor rejects nonfinite vertices.
 
 ## Rounded rectangle profiles
 

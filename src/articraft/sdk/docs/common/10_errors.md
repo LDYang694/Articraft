@@ -1,6 +1,6 @@
 # Errors
 
-The public SDK exports `SDKError`, `ValidationError`, and `LoopClosureError`.
+Import the public SDK errors from `articraft.sdk`:
 
 ```python
 from articraft.sdk import LoopClosureError, SDKError, ValidationError
@@ -8,26 +8,26 @@ from articraft.sdk import LoopClosureError, SDKError, ValidationError
 
 ## `SDKError`
 
-Base class for errors defined by the Articraft SDK. Catch it only when a caller
-can handle any SDK validation failure in one place.
+`SDKError` is the base class for errors from the Articraft SDK. Catch it only when you can
+handle all SDK validation failures in one place.
 
 ## `ValidationError`
 
-Raised when an assembly, rigid body, shape, joint, articulation, physics state,
-or named test selector violates the public contract. Examples include:
+The SDK raises `ValidationError` when an object does not follow the public contract. The error
+can apply to these values:
 
-- an empty or duplicate name;
-- invalid build123d or mesh geometry;
-- a joint endpoint outside its assembly;
-- a disconnected physical graph;
-- a cyclic or disconnected selected articulation tree;
-- a joint limit that excludes the frame-defined zero configuration;
-- a `PhysicsState` that violates a locked D6 axis or limit.
+- An assembly, body, or shape.
+- A joint or articulation.
+- A physics state.
+- A named test selector.
 
-Value objects validate when they are constructed. `RigidBody.add(...)` validates
-the shape it stores, and `model.joint(...)` resolves its endpoints immediately.
-`model.validate()` calls `resolve()` and checks the whole graph, every body and
-shape, every articulation tree, and the reference state.
+Common causes include duplicate names, invalid geometry, and joint limits that exclude zero.
+The SDK also rejects invalid physical graphs and articulation trees.
+
+Value objects validate during construction. `RigidBody.add(...)` validates the shape that you
+give it. `model.joint(...)` resolves its endpoints immediately.
+
+Call `model.validate()` to check the complete assembly:
 
 ```python
 try:
@@ -36,34 +36,35 @@ except ValidationError as exc:
     print(exc)
 ```
 
-Authored assertions do not raise. `TestContext.check(...)` records failures in
+Authored test assertions do not raise this error. `TestContext.check(...)` records failures in
 its `TestReport`.
 
 ## `LoopClosureError`
 
-A `ValidationError` raised when supplied tree coordinates cannot satisfy every
-closed-loop constraint. The message says which of two causes applies. When it
-names solved joint positions *pinned at their limits*, those limits are what
-stop the loop: widen them if the pose should be reachable, or tighten the
-driving DOF's limits so the unreachable pose is never requested. Otherwise the
-linkage geometry itself cannot reach the pose: shorten the drive's range, or
-fix the link lengths and joint frames that decide it.
+`LoopClosureError` is a type of `ValidationError`. The solver raises it when tree coordinates
+cannot satisfy a closed loop.
 
-## Built-in Python errors
+If the message names joints at their limits, those limits prevent the pose. Change the limits
+only when the mechanism must reach that pose.
 
-Public helpers may use ordinary errors where appropriate:
+Otherwise, the linkage geometry cannot reach the pose. Check the drive range, link lengths,
+and joint frames.
 
-- `TypeError` for a missing required argument or incompatible Python value;
-- `ValueError` for an impossible dimension, zero transform axis, invalid
-  profile, failed mesh boolean, or empty allowance reason;
-- `FileNotFoundError` and other `OSError` subclasses for external assets.
+## Built in Python errors
 
-Catch the narrow error an operation documents. Do not catch an error merely to
-continue with geometry that did not build correctly.
+Public helpers can also raise these Python errors:
+
+- `TypeError` means that an argument is missing or has the wrong Python type.
+- `ValueError` means that a value cannot produce valid geometry or motion.
+- `FileNotFoundError` means that a required external asset does not exist.
+- Another `OSError` means that an external asset operation failed.
+
+Catch the narrow error that the operation documents. Do not continue with geometry that did
+not build correctly.
 
 ## Lookups
 
-Lookup helpers raise `ValidationError` when a name cannot be resolved:
+A lookup raises `ValidationError` when it cannot resolve a name:
 
 ```python
 body = model.get_rigid_body("body")
@@ -71,7 +72,7 @@ shape = body.shape("housing")
 joint = model.get_joint("body_to_lid")
 ```
 
-Body and joint names are assembly-scoped. Shape names are body-scoped.
+Body and joint names are unique within an assembly. Shape names are unique within a body.
 
-Import public values from `articraft.sdk`; documentation paths such as
-`docs/sdk/common/20_core_types.md` are not Python modules.
+Import Python values from `articraft.sdk`. A path such as `docs/sdk/common/20_core_types.md` is
+documentation, not a Python module.

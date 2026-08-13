@@ -13,6 +13,86 @@ from articraft.errors import MiniArticraftError
 from articraft.sdk import RigidBodyAssembly, TestReport
 from articraft.sdk.errors import SDKError, ValidationError
 
+_INSTRUCTION_VERBS = {
+    "add",
+    "apply",
+    "attach",
+    "call",
+    "catch",
+    "change",
+    "check",
+    "choose",
+    "compare",
+    "convert",
+    "create",
+    "do",
+    "enable",
+    "give",
+    "import",
+    "keep",
+    "leave",
+    "omit",
+    "open",
+    "pass",
+    "prefer",
+    "read",
+    "remove",
+    "run",
+    "select",
+    "set",
+    "start",
+    "use",
+}
+
+
+def first_party_prose_paths() -> list[Path]:
+    repo_root = package_dir.parents[1]
+    sdk_docs = package_dir / "sdk" / "docs"
+    return [
+        repo_root / "docs" / "sdk.md",
+        *sorted(sdk_docs.joinpath("common").glob("*.md")),
+        *sorted(sdk_docs.joinpath("mesh").glob("*.md")),
+    ]
+
+
+def markdown_prose_blocks(path: Path) -> list[tuple[int, str]]:
+    blocks: list[tuple[int, str]] = []
+    paragraph: list[str] = []
+    paragraph_line = 0
+    in_code = False
+
+    def flush() -> None:
+        nonlocal paragraph
+        if paragraph:
+            blocks.append((paragraph_line, " ".join(paragraph)))
+            paragraph = []
+
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.startswith("```"):
+            flush()
+            in_code = not in_code
+            continue
+        if (
+            in_code
+            or not line.strip()
+            or line.startswith("#")
+            or line.startswith("|")
+            or line.lstrip().startswith("<")
+        ):
+            flush()
+            continue
+
+        list_item = re.match(r"^\s*(?:[-*]|\d+\.)\s+", line)
+        if list_item:
+            flush()
+            paragraph_line = line_number
+        elif not paragraph:
+            paragraph_line = line_number
+        paragraph.append(re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line.strip()))
+
+    flush()
+    return blocks
+
 
 def detailed_reference_paths(sdk_docs: Path) -> list[str]:
     return sorted(
@@ -36,8 +116,45 @@ def test_quickstart_is_short_and_routes_to_targeted_references() -> None:
         "docs/sdk/build123d/",
     ]:
         assert reference in quickstart
-    assert "Read only the reference that applies" in quickstart
+    assert quickstart.count("docs/sdk/common/") >= 9
+    assert quickstart.count("docs/sdk/mesh/") >= 6
     assert "read every" not in quickstart.lower()
+
+
+def test_readme_and_public_doc_links_resolve() -> None:
+    repo_root = package_dir.parents[1]
+    paths = [repo_root / "README.md", *sorted(repo_root.joinpath("docs").glob("*.md"))]
+    pattern = re.compile(r"\[[^]]+\]\(([^)]+)\)")
+
+    for source in paths:
+        for target in pattern.findall(source.read_text(encoding="utf-8")):
+            path_text = target.split("#", 1)[0]
+            if not path_text or "://" in path_text or path_text.startswith("mailto:"):
+                continue
+            assert source.parent.joinpath(path_text).exists(), (source.name, target)
+
+
+def test_first_party_sdk_prose_uses_short_sentences_and_plain_punctuation() -> None:
+    failures: list[str] = []
+
+    for path in first_party_prose_paths():
+        for line_number, block in markdown_prose_blocks(path):
+            if match := re.search(r"[;\u2013\u2014]", block):
+                failures.append(f"{path}:{line_number}: disallowed punctuation {match.group()!r}")
+
+            text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", block)
+            text = re.sub(r"`[^`]+`", "TECH", text)
+            for sentence in re.split(r"(?<=[.!?])\s+|:\s*$", text):
+                words = re.findall(r"[A-Za-z0-9]+", sentence)
+                if not words:
+                    continue
+                limit = 20 if words[0].lower() in _INSTRUCTION_VERBS else 25
+                if len(words) > limit:
+                    failures.append(
+                        f"{path}:{line_number}: {len(words)} words exceeds {limit}: {sentence}"
+                    )
+
+    assert not failures, "\n".join(failures)
 
 
 def test_quickstart_routes_every_detailed_sdk_reference() -> None:

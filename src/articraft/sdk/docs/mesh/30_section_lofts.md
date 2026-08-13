@@ -1,9 +1,9 @@
 # Section lofts
 
-Use `section_loft(...)` when a form is described by ordered three dimensional
-cross sections. This helper can reconcile different point counts, align
-section loops, follow a guide path, interpolate smooth spans, close a section
-loop, and mirror a half form.
+Use `section_loft(...)` for a form that has ordered three dimensional sections. The helper can
+align sections with different point counts.
+
+It can also follow a path, add smooth spans, close the path, or mirror half of a form.
 
 All coordinates and path values use meters.
 
@@ -138,9 +138,8 @@ profiles should describe one continuous loop.
 The helper resamples every section to the largest section point count. It
 samples points by distance around each closed perimeter.
 
-With `align_sections=True`, it then reverses a loop when its normal opposes the
-previous loop and chooses the cyclic point offset that best matches the
-previous loop.
+With `align_sections=True`, the helper can reverse a loop to match the previous normal. It also
+selects the best cyclic point offset.
 
 Set `align_sections=False` when each authored starting point has a specific
 meaning, such as the leading edge of several blade profiles. The helper still

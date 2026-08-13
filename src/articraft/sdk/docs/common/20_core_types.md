@@ -2,46 +2,48 @@
 
 ## Units and coordinates
 
-Articraft geometry uses meters. Build123d dimensions, mesh vertices,
-`JointFrame.xyz`, translational DOFs, bounds, distances, and tolerances all use
-meters. The SDK and exported USD stages use right-handed XYZ coordinates with Z
-up.
+Use meters for all geometry and linear motion. This rule applies to these values:
 
-`JointFrame.rpy`, rotational DOFs, rotational limits, and mesh rotations use
-radians. Build123d `Rot(...)` uses degrees; convert when moving angles between
-the APIs.
+- Build123d dimensions and mesh vertices.
+- `JointFrame.xyz` and translational degrees of freedom.
+- Bounds, distances, and tolerances.
+
+The SDK uses right handed XYZ coordinates with Z as the up axis.
+
+Use radians for `JointFrame.rpy`, rotational motion, rotational limits, and mesh rotations.
+Build123d `Rot(...)` uses degrees.
 
 ## Geometry
 
-`RigidBody.add(...)` accepts a build123d `Shape` or `MeshGeometry`. Both use the
-body-local frame. Every shape has a unique name within its body and may carry a
-`Material`, `coating`, and RGB/RGBA `color`.
+`RigidBody.add(...)` accepts a build123d `Shape` or `MeshGeometry`. Both types use the local
+frame of the body.
 
-Read [assemblies and rigid bodies](30_assembly.md) for structure and
+Give each shape a unique name within its body. A shape can also have a `Material`, coating,
+and RGB or RGBA color.
+
+Read [assemblies and rigid bodies](30_assembly.md) for object structure. Read
 [mesh geometry](../mesh/00_mesh_geometry.md) for procedural mesh authoring.
 
 ## Physics graphs
 
-`BodyFrame`, `JointFrame`, `JointDOF`, `JointAxis`, and `Joint` describe physical
-constraints. A `BodyFrame` binds local coordinates to a `RigidBody` or `WORLD`,
-so a joint endpoint cannot accidentally pair one body's frame with another body.
-`Articulation` independently selects a reduced-coordinate tree. `PhysicsState`
-stores authoritative world-space body poses.
+`BodyFrame`, `JointFrame`, `JointDOF`, `JointAxis`, and `Joint` define physical constraints.
+A `BodyFrame` binds local coordinates to a `RigidBody` or `WORLD`.
 
-Read [joints and articulations](35_joints.md) for frames, D6 axes, loops, and
-kinematics.
+An `Articulation` selects the solver tree. A `PhysicsState` stores the world pose of each body.
+
+Read [joints and articulations](35_joints.md) for frames, axes, loops, and motion.
 
 ## Testing and errors
 
-`TestContext` records authored checks and `TestReport` contains their failures,
-warnings, metrics, and justified allowances. A context can inspect either a
-tree pose or a complete `PhysicsState`.
+`TestContext` records authored checks. `TestReport` contains failures, warnings, metrics, and
+approved allowances.
 
-The public errors are `SDKError`, `ValidationError`, and `LoopClosureError`.
-Read [errors](10_errors.md) and [testing](40_testing.md).
+A test context can inspect an articulation pose or a complete `PhysicsState`.
+
+The public errors are `SDKError`, `ValidationError`, and `LoopClosureError`. Read
+[errors](10_errors.md) and [testing](40_testing.md).
 
 ## Export
 
-`export_assembly(...)` writes a validated USDZ plus manifest schema version 2.
-Read [USDZ export](50_usdz_export.md) for the body, joint, articulation, and
-state layout.
+`export_assembly(...)` writes a validated USDZ file and a schema version 2 manifest. Read
+[USDZ export](50_usdz_export.md) for the complete output structure.

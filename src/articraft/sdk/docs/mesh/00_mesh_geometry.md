@@ -1,12 +1,12 @@
 # Mesh geometry and solid builders
 
-Use this page for direct triangle mesh editing, trimesh conversion, build123d
-conversion, primitive solids, lathes, simple lofts, and extrusions.
+Use this page to edit triangle meshes and convert build123d shapes. It also documents mesh
+primitives, lathes, simple lofts, and extrusions.
 
 All coordinates and lengths use meters. All angle arguments use radians. Mesh
 faces are triangles with zero based vertex indices.
 
-Import these names from the public SDK.
+Import the geometry classes from `articraft.sdk`.
 
 This page documents `BoxGeometry`, `CapsuleGeometry`, `ConeGeometry`,
 `CylinderGeometry`, `DomeGeometry`, `ExtrudeGeometry`,
@@ -36,20 +36,20 @@ from articraft.sdk.mesh import build123d_to_mesh
 
 ## Choose a geometry type
 
-Use build123d for exact solid modeling, cuts, fillets, and topology based work.
-It is the default when a shape depends on constant wall thickness, a clean
-opening or bore, a rim, a mating face, or a local edge treatment. Add the
-resulting build123d shape directly to a part when no mesh operation is needed.
+Use build123d for exact solids, cuts, fillets, and topology work. Prefer it for constant wall
+thickness, openings, bores, rims, mating faces, and local edge treatments.
 
-Use `MeshGeometry` when you need direct vertex editing, a procedural mesh
-builder, a mesh boolean, or a freeform surface described by sections and paths.
-Keep matching shell boundaries derived from the same sections and frames. Use
-`build123d_to_mesh(...)` only when a build123d shape must enter one of those
-mesh workflows.
+Add the build123d shape directly to a body when you do not need a mesh operation.
 
-Use `analyze_mesh_health(...)` on custom or imported mesh work. Watertightness
-alone does not find bad triangles, duplicate data, disconnected solid debris,
-or winding errors. The compile worker repeats this check for every named shape.
+Use `MeshGeometry` for direct vertex changes, mesh booleans, or freeform surfaces. Derive
+matching shell boundaries from the same sections and frames.
+
+Use `build123d_to_mesh(...)` only when a mesh operation needs a build123d shape.
+
+Use `analyze_mesh_health(...)` on custom or imported meshes. Watertightness does not find all
+bad triangles, duplicate data, separate debris, or winding errors.
+
+The compile worker repeats this check for every named shape.
 
 ## MeshGeometry
 
@@ -209,8 +209,8 @@ placed = Pos(X=0.20, Z=0.05) * Box(0.10, 0.08, 0.04)
 mesh = build123d_to_mesh(placed)
 ```
 
-Do not convert a build123d shape just to add it to a part. `Part.add(...)`
-accepts the build123d shape directly and preserves its location.
+Do not convert a build123d shape only to add it to a body. `RigidBody.add(...)` accepts the
+build123d shape directly and preserves its location.
 
 ## Primitive builders
 
@@ -469,9 +469,8 @@ different point counts, need path offsets, need symmetry, or need repair.
 At least two profiles are required. Every profile must have the same point
 count. With `closed=True`, each profile needs at least three distinct points
 and must enclose a nonzero planar area. Adjacent profile centers must be
-different. The helper corrects reversed loop winding by comparing each profile
-with the previous one, but corresponding points should still describe the same
-feature around each profile.
+different. The helper compares adjacent profiles and corrects reversed loop winding.
+Corresponding points must still describe the same feature around each profile.
 
 With `closed=False`, profiles are treated as open polylines with at least two
 points. Only adjacent points are connected. Caps are only added when both

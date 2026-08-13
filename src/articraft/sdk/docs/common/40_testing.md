@@ -1,7 +1,7 @@
 # Testing geometry and assemblies
 
-`TestContext` records checks against a `RigidBodyAssembly`. The checks use the same named
-shapes, body transforms, and meter scale that the USDZ exporter uses.
+Use `TestContext` to record checks for a `RigidBodyAssembly`. The checks use the same shapes,
+body transforms, and units as export.
 
 Every `main.py` must define `run_tests()` and return a `TestReport`.
 
@@ -24,14 +24,15 @@ def run_tests() -> TestReport:
     return ctx.report()
 ```
 
-Use authored checks for facts that are important to the requested object. The compiler adds the
-baseline checks described below. See [USDZ export](50_usdz_export.md) for the output that a
-passing report can produce.
+Add checks for facts that are important to the requested object. The compiler adds the baseline
+checks on this page.
+
+Read [USDZ export](50_usdz_export.md) for the output from a passing report.
 
 ## Units and geometry
 
-All positions, distances, gaps, tolerances, and prismatic pose values use meters. Revolute and
-continuous pose values use radians.
+Positions, distances, gaps, tolerances, and translation values use meters. Rotation values use
+radians.
 
 Collision and distance checks convert each shape to a triangle mesh. `MeshGeometry` uses its
 authored vertices and faces. A build123d shape is tessellated with the context's
@@ -40,7 +41,7 @@ authored vertices and faces. A build123d shape is tessellated with the context's
 World bounds are axis aligned. Projection checks therefore measure world bounds, not the exact
 curved surface between those bounds.
 
-## Creating a context
+## Create a context
 
 ```python
 ctx = TestContext(object_model, mesh_tolerance=0.001)
@@ -48,15 +49,18 @@ ctx = TestContext(object_model, mesh_tolerance=0.001)
 
 `model` must be a `RigidBodyAssembly`. `mesh_tolerance` must be positive and finite.
 
-Body selectors accept a `RigidBody` or its name. Shape selectors use the unique shape name within the
-given body. A missing body or shape raises `ValidationError`.
+Select a body with a `RigidBody` or its name. Select a shape with its unique name within the
+body.
 
-`ctx.pose({...})` temporarily applies tree DOF values and solves unspecified
-coordinates needed by closed loops. `ctx.state(physics_state)` instead uses a
-complete authoritative `PhysicsState`; use it for maximal-coordinate states,
-multiple articulation trees, or poses recorded by a physics backend.
+A missing body or shape raises `ValidationError`.
 
-## Frame intent checks
+`ctx.pose({...})` applies temporary tree positions. It also solves unspecified positions in
+closed loops.
+
+`ctx.state(physics_state)` uses a complete `PhysicsState`. Use it for multiple articulation
+trees or poses from a physics engine.
+
+## Check frame intent
 
 Frame checks consume the same `BodyFrame` values as `model.joint(...)` and use
 the current pose.
@@ -66,17 +70,20 @@ ctx.expect_coincident(base.at(base_pin), arm.at(arm_pin))
 ctx.expect_coaxial(base.at(base_axis), arm.at(arm_axis), axis="z")
 ```
 
-`expect_coincident(first, second, *, position_tol=1e-6, angle_tol=1e-6,
-name=None)` checks both origins and full orientations. `expect_coaxial(first,
-second, *, axis="z", position_tol=1e-6, angle_tol=1e-6, name=None)` checks that
-the selected local X, Y, or Z axes lie on the same infinite line; opposite
-directions count as aligned. Linear tolerances use meters and angular tolerances
-use radians.
+`expect_coincident(first, second, *, position_tol=1e-6, angle_tol=1e-6, name=None)` checks both
+origins and complete orientations.
 
-Use these for pins, bearings, hinge edges, and derived loop closures. Use
-`expect_contact(...)` for actual surface touching and `expect_within(...)` or
-`expect_gap(...)` for seating and support relationships; those are mesh checks,
-not frame checks.
+`expect_coaxial(first, second, *, axis="z", position_tol=1e-6, angle_tol=1e-6, name=None)` checks
+that two selected local axes share one line.
+
+Opposite directions count as aligned. Linear tolerances use meters, and angular tolerances use
+radians.
+
+Use these checks for pins, bearings, hinge edges, and loop closures. Use
+`expect_contact(...)` to check surface contact.
+
+Use `expect_within(...)` or `expect_gap(...)` for support relationships. Those functions check
+meshes, not frames.
 
 ## Reports
 
@@ -86,12 +93,11 @@ not frame checks.
 TestFailure(name: str, details: str, kind: FailureKind = FailureKind.AUTHORED)
 ```
 
-Each blocking failure has the recorded check name and a detail string. `kind` is a
-machine-readable `FailureKind` assigned by the check method (for example `OVERLAP`,
-`CONTACT`, or `ISOLATED_PART`); checks authored with `check()`/`fail()` always record
-`FailureKind.AUTHORED`. When the compile worker merges authored checks with its baseline,
-it adds `source="tests"` or `source="compiler"` to the serialized failure. Provenance is
-owned by that boundary rather than by model-authored test code.
+Each blocking failure has a check name and details. The check method assigns a
+`FailureKind`, such as `OVERLAP` or `CONTACT`.
+
+`check()` and `fail()` use `FailureKind.AUTHORED`. The compile worker adds `source="tests"` or
+`source="compiler"` to each serialized failure.
 
 ### `AllowedOverlap`
 
@@ -275,34 +281,36 @@ ctx.pose(
 )
 ```
 
-Keys name **joints**, not articulations, in one of three spellings:
+Keys name joints, not articulations. Use one of these forms:
 
-- a `Joint` object;
-- a joint name (`"hinge"`) -- only for a joint with exactly one DOF;
-- a qualified DOF id (`"hinge.rotZ"`, `"slide.transX"`) -- the joint name, a
-  dot, and the `JointAxis` value. This is the only spelling for a joint that
-  carries several DOFs, and the same ids key `forward_kinematics(...)` and
-  `PhysicsState.dof_positions`.
+- A `Joint` object.
+- A joint name such as `"hinge"` for a joint with one degree of freedom.
+- A qualified identifier such as `"hinge.rotZ"` or `"slide.transX"`.
 
-DOF ids contain a dot, so they must go through the mapping argument rather
-than a keyword. Every value must be finite and inside the DOF's limits;
-out-of-limit values raise `ValidationError` at the `pose()` call. A fixed
-joint has no DOF to pose, and a loop-closing joint's value is derived from
-the tree, so posing either raises.
+Use the qualified form for a joint with several free axes. The same identifiers work with
+`forward_kinematics(...)` and `PhysicsState.dof_positions`.
 
-The context restores the previous pose when the `with` block ends. Nested pose blocks therefore
-restore the pose that was active before each block. In a closed-loop assembly, checks under a
-pose run the graph solver; a pose the ring cannot reach raises `LoopClosureError` from a direct
-measurement, while the `*_at_poses` sweep checks record it as a failed sample and continue.
-A loop-closing joint cannot be posed at all: its value is decided by the rest of the mechanism.
+Qualified identifiers contain a dot, so pass them through the mapping argument. Each value must
+be finite and within its limits.
+
+An invalid position raises `ValidationError` at the `pose()` call. You cannot pose a fixed joint
+or a closing joint.
+
+The context restores the previous pose when the `with` block ends. Nested blocks restore the
+pose that was active before each block.
+
+In a closed loop, direct measurements raise `LoopClosureError` for an unreachable pose. Sweep
+checks record an unreachable sample as a failure and continue.
+
+The mechanism determines the position of a closing joint, so you cannot pose it directly.
 
 ### `PoseSample`
 
-`sample_joint(...)` returns `PoseSample` records. It requires a joint with
-exactly one DOF and rejects loop-closing joints, whose values are derived
-rather than posed. The default sweep spans the joint's authored limits; in a
-closed loop the reachable range can be narrower, and the `*_at_poses` checks
-record any unreachable sample as a failure.
+`sample_joint(...)` returns `PoseSample` records. It requires a joint with one degree of freedom
+and rejects closing joints.
+
+The default sweep spans the authored limits. A closed loop can have a smaller reachable range,
+so sweep checks record unreachable samples as failures.
 
 ```python
 poses = ctx.sample_joint("lid_hinge", samples=5)
@@ -504,9 +512,10 @@ duplicate failures, warnings, and allowance strings are also merged.
 ### Model validity and root policy
 
 `check_model_valid()` calls `object_model.validate()`. The assembly must contain valid named
-geometry and form one connected physical joint graph. Each authored articulation validates its own
-root and selected tree; maximal-coordinate assemblies and multiple articulations do not have one
-global root.
+geometry and one connected physical joint graph.
+
+Each articulation validates its root and selected tree. An assembly with several articulations
+does not have one global root.
 
 ### Physical isolation
 
@@ -556,9 +565,11 @@ A pair can be a blocking overlap only when all of these facts are true:
 3. The triangle meshes collide.
 4. No matching overlap allowance exists.
 
-For watertight meshes, the pair blocks only when its solid intersection volume exceeds
-`overlap_volume_tol`. When solid volume is unavailable, the pair blocks when its reported
-penetration is greater than `1e-6` meters or the result does not include a penetration depth.
+For watertight meshes, a pair blocks only when its intersection volume exceeds
+`overlap_volume_tol`.
+
+Without solid volume, the pair blocks for penetration greater than `1e-6` meters. It also blocks
+when no penetration depth is available.
 
 Mere contact passes. Bounds penetration at or below either physical threshold also passes. A
 shape allowance suppresses only its exact pair. The report includes at most one representative
@@ -567,7 +578,7 @@ unallowed shape pair for each part pair, chosen by overlap depth and volume.
 The baseline check uses the rest pose. Use `with ctx.pose(...)` and an authored exact check when a
 different pose is important to the requested mechanism.
 
-## Choosing checks
+## Choose checks
 
 Checks are design evidence. Do not delete or simplify visible geometry only to make a check pass.
 

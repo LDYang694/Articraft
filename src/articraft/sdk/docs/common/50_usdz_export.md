@@ -1,18 +1,22 @@
 # USDZ export
 
+Import the exporter from `articraft.sdk.export`:
+
 ```python
 from articraft.sdk.export import export_assembly
-
 
 result = export_assembly(object_model, "output")
 ```
 
-`export_assembly(...)` resolves and validates a `RigidBodyAssembly`, writes the
-next numbered USDZ under `output/usdz/`, and atomically replaces
-`output/model.json`. It returns `AssemblyExportResult` with paths, texture
-results, and an `AssemblyExportAudit`.
+`export_assembly(...)` resolves and validates the assembly. It writes the next numbered USDZ
+file under `output/usdz/`.
+
+The function also replaces `output/model.json` with one atomic file operation. It returns an
+`AssemblyExportResult` with paths, texture results, and an `AssemblyExportAudit`.
 
 ## Stage layout
+
+The exporter uses this USD structure:
 
 ```text
 /World/physicsScene
@@ -22,44 +26,48 @@ results, and an `AssemblyExportAudit`.
 /World/<assembly>/joints/<joint>
 ```
 
-Rigid bodies are siblings with their reference-state world transforms. Every
-physical joint exports both local endpoint frames and targets its two bodies.
+Rigid bodies are siblings. Each body has its world transform from the reference state.
 
-- zero DOFs use `UsdPhysics.FixedJoint`;
-- one rotational DOF uses `UsdPhysics.RevoluteJoint`;
-- one translational DOF uses `UsdPhysics.PrismaticJoint`;
-- other combinations use `UsdPhysics.Joint` with per-axis `LimitAPI` schemas.
+Each physical joint stores its two local endpoint frames and targets its two bodies.
 
-Rotational limits are converted from SDK radians to USD degrees. Linear limits
-remain meters. Unlisted D6 axes are locked.
+- A joint with no free axis uses `UsdPhysics.FixedJoint`.
+- A joint with one rotational axis uses `UsdPhysics.RevoluteJoint`.
+- A joint with one translational axis uses `UsdPhysics.PrismaticJoint`.
+- Other joints use `UsdPhysics.Joint` with an axis limit schema.
 
-`UsdPhysics.ArticulationRootAPI` is applied to the selected root body or fixed
-world-root joint, never to the assembly prim. A joint incident to an articulated
-body but omitted from its tree is authored as a regular constraint with
-`physics:excludeFromArticulation = true`.
+The exporter converts rotational limits from radians to degrees. Linear limits remain in
+meters. Unlisted axes remain locked.
+
+The selected root body or world joint gets `UsdPhysics.ArticulationRootAPI`. The assembly prim
+does not get this API.
+
+A physical joint outside the articulation tree gets `physics:excludeFromArticulation = true`.
 
 ## Manifest schema 2
 
-`model.json` records:
+`model.json` records these values:
 
-- `rigid_bodies`, shapes, materials, mass, and body state;
-- every joint endpoint, frame, D6 freedom, limit, articulation membership, and
-  derived exclusion status;
-- each articulation root and selected spanning-tree joints;
-- the complete reference `PhysicsState`;
-- the numbered USDZ path.
+- Rigid bodies, shapes, materials, mass, and body state.
+- Joint endpoints, frames, free axes, limits, and articulation membership.
+- Each articulation root and its selected tree joints.
+- The complete reference `PhysicsState`.
+- The numbered USDZ path.
 
-The manifest is descriptive output, not another authoring API.
+The manifest describes the output. Do not use it as an authoring API.
 
 ## Validation and audit
 
-Export runs OpenUSD validators and an internal topology audit. The audit checks
-that articulation edges are trees, every physical joint was written, excluded
-constraints carry the required USD flag, body targets exist, meshes have
-normals, and authored material bindings survive packaging.
+Export runs OpenUSD validators and an internal topology audit. The audit checks these rules:
 
-The exporter removes a partial USDZ if validation fails. Existing numbered
-exports are not overwritten.
+- Articulation edges form trees.
+- Every physical joint is present.
+- Excluded constraints have the required USD flag.
+- Every body target exists.
+- Every mesh has normals.
+- Material bindings remain after packaging.
 
-Closed loops are represented natively, but their numerical stability is a
-property of the chosen USD physics backend, timestep, and solver settings.
+The exporter removes a partial USDZ file when validation fails. It does not overwrite an
+existing numbered export.
+
+USD can represent closed loops. Their stability depends on the physics backend, time step,
+and solver settings.

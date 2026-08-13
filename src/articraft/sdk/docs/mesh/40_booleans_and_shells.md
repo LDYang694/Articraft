@@ -1,7 +1,7 @@
 # Booleans, openings, and shell partitions
 
-Use this page for Manifold mesh booleans, hollow mesh shells, face opening
-throats, and axis aligned shell partitions.
+Use this page for mesh booleans, hollow shells, opening throats, and shell partitions. The
+boolean operations use Manifold.
 
 All coordinates, dimensions, gaps, and depths use meters.
 
@@ -29,8 +29,8 @@ The boolean helpers use Manifold. Each input must be a nonempty valid closed
 `MeshGeometry` solid. A mesh that only contains a surface, an uncapped pipe, or
 separate open triangles is not a valid boolean input.
 
-The helpers validate both inputs and return a new `MeshGeometry`. They do not
-mutate either input.
+The helpers validate both inputs and return a new `MeshGeometry`. They do not change either
+input.
 
 A valid boolean can have no shared or remaining volume. The helpers raise an
 error for an empty result.
@@ -111,12 +111,13 @@ region box.
 ## Boolean errors
 
 The helpers raise `TypeError` when an input is not `MeshGeometry`.
-`MeshGeometry.validate()` can raise `ValidationError` for invalid vertices or
-faces. The helpers raise `ValueError` when an input is empty, open, nonmanifold,
-or rejected by Manifold. They also raise when an output has bad triangles,
-invalid edges, bad winding, inward orientation, or unintended separate solids.
-The error names the operation and the affected bounds so you can inspect the
-failing region.
+`MeshGeometry.validate()` can raise `ValidationError` for invalid vertices or faces.
+
+The helpers raise `ValueError` for an empty, open, or nonmanifold input. They also raise when
+Manifold rejects the input.
+
+An invalid output also raises `ValueError`. The message names the operation and the affected
+bounds.
 
 Check these properties before retrying a failed boolean.
 
@@ -286,9 +287,9 @@ right_front = pieces["right_front"]
 body = pieces["body"]
 ```
 
-The result meshes are independent. Add them as named shapes when they belong to
-one rigid part, or add them to separate parts when the prompt requires separate
-motion.
+The result meshes are independent. Add them as named shapes when they belong to one rigid part.
+
+Use separate parts when the prompt requires separate motion.
 
 ## weld and snap_to: blend a protrusion into a form
 
@@ -303,11 +304,12 @@ weld(
 ) -> MeshGeometry
 ```
 
-The public `weld` function fuses closed solids into one smooth mesh. Use it to grow a molded
-transition where a spout meets a shell, a boss meets a panel, or a handle meets
-a body. Place the pieces so they overlap, then weld them and add the single
-result to the part. Use `boolean_union(...)` instead when the joint should stay
-sharp and preserve the exact input surfaces.
+The public `weld` function fuses closed solids into one smooth mesh. Use it to create a molded
+transition between two forms.
+
+Place the pieces so they overlap. Then weld them and add the one result to the body.
+
+Use `boolean_union(...)` when the joint must stay sharp and keep the exact input surfaces.
 
 Weld samples the full bounds of every input and rebuilds their surfaces. It is
 well suited to one continuous freeform result. It is not a local fillet for an
@@ -341,19 +343,21 @@ molded = weld(
 kettle.add(molded, name="body_with_molded_spout", color=(0.80, 0.82, 0.83))
 ```
 
-When the body is a hollow shell and the protrusion pokes through the wall into
-the cavity, pass `trim`, which is the solid that fills the cavity. The trim
-field is applied during the same surface extraction as the weld. This avoids a
-second near coincident boolean against the rebuilt surface.
+If a protrusion enters a hollow cavity, pass `trim`. This solid fills the cavity during the
+weld.
+
+The weld applies the trim during surface extraction. This avoids another boolean against the
+rebuilt surface.
 
 ```python
 molded = weld(shell, spout, trim=cavity_solid)
 ```
 
-If a protrusion was placed with a small gap to the form it should meet, call
-`snap_to(anchor, piece, overlap=0.004, max_move=0.02, axis=None)` first. It moves the
-piece toward `anchor` until they overlap by about `overlap` and returns it, so you do
-not have to hit the exact coordinate by hand. Snap the piece BEFORE you add it:
+If a small gap exists, call
+`snap_to(anchor, piece, overlap=0.004, max_move=0.02, axis=None)` first.
+
+The function moves `piece` toward `anchor` until the overlap is approximately `overlap`. Snap
+the piece before you add it:
 
 ```python
 spout = snap_to(body, spout, max_move=0.01)   # close the gap
@@ -364,12 +368,13 @@ kettle.add(
 )
 ```
 
-`snap_to` only translates the whole piece, so it fits a single freely-placeable
-attachment (a boss, a foot, a spout root). It raises `SnapRefused` when closing the
-gap would move the piece further than `max_move` -- a large required move means the
-piece is constrained (a hinge barrel on its axis) or must meet the body at more than
-one place (a handle with two ends), and those are fixed by their own shape or path,
-not by snapping. Pass `axis` to constrain the motion to one direction.
+`snap_to` only translates the complete piece. Use it for one attachment that can move freely.
+
+It raises `SnapRefused` when the required move is larger than `max_move`. A large move usually
+means that other design parameters are incorrect.
+
+Change those parameters instead of using a large snap. Pass `axis` when the permitted motion
+has one direction.
 
 ## smooth_difference: generate rounded cuts
 
@@ -422,8 +427,8 @@ cutters remove the entire solid.
   move safely.
 - Use `smooth_difference(...)` for a cut with a generated rounded transition.
 - Use `boolean_difference(...)` for an exact sharp cavity, hole, or trim.
-- Note: `boolean_difference` against a thin hollow shell removes only a wall-thick
-  slice and can fragment the input into slivers; subtract a solid to remove
+- `boolean_difference` against a thin hollow shell removes only a wall thickness
+  slice and can fragment the input into slivers. Subtract a solid to remove
   everything inside a surface.
 - Use `cut_opening_on_face(...)` only when the outer opening boundary already
   exists and you need its throat walls.

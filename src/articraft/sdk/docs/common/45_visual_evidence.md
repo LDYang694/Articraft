@@ -1,10 +1,11 @@
 # Visual evidence and artifacts
 
-Use visual evidence after the model builds. The renderer works without a
-window or graphics processor. It writes PNG files that the agent can inspect
-with `view_image`.
+Render images after the model can run. The renderer does not need a window or graphics
+processor.
 
-Import these public names from `articraft.sdk`.
+It writes PNG files that you can inspect with `view_image`.
+
+Import these public names from `articraft.sdk`:
 
 ```python
 from articraft.sdk import (
@@ -22,14 +23,15 @@ from articraft.sdk import (
 )
 ```
 
-## Reference reticles
+## Mark a reference image
 
-`ImagePoint` stores one normalized coordinate and `Reticle` gives it a label and
-display color. `annotate_image` draws those reticles on a reference image.
+`ImagePoint` stores one normalized image coordinate. `Reticle` gives the point a label and
+display color.
 
-Image-driven runs place the prepared input at `reference.png`, `reference.jpg`, or
-`reference.webp` in the workspace. Use normalized coordinates (`u` right, `v`
-down) to mark evidence without depending on the image resolution.
+Use `annotate_image` to draw reticles on a reference image. The workspace stores the
+prepared input as `reference.png`, `reference.jpg`, or `reference.webp`.
+
+The `u` coordinate increases to the right. The `v` coordinate increases down the image.
 
 ```python
 annotate_image(
@@ -42,15 +44,14 @@ annotate_image(
 )
 ```
 
-Open the annotated output with `view_image` to confirm each reticle is on the
-intended feature. Reticles record visible evidence; they do not infer depth from
-a single image.
+Open the output with `view_image`. Confirm that each reticle marks the intended feature.
 
-## Preview before compile
+A reticle records visible evidence. It cannot find depth from one image.
 
-Use a local `previews.py` script to inspect the first complete model before the
-final compile. The script can import `object_model` from `main.py` and call the
-public renderer directly.
+## Preview before compilation
+
+Create `previews.py` after you have the first complete model. Import `object_model` from
+`main.py` and call the public renderer.
 
 ```python
 from main import object_model
@@ -80,20 +81,19 @@ if __name__ == "__main__":
     main()
 ```
 
-Run the script through `exec_command`.
+Run the script with the Articraft Python interpreter:
 
 ```sh
 "$ARTICRAFT_PYTHON" previews.py
 ```
 
-`ARTICRAFT_PYTHON` points to the same Python interpreter that runs
-articraft, so the public SDK is available without a private import or an
-SDK edit. Open each useful output with `view_image`. Running the script does not
-count as visual inspection.
+`ARTICRAFT_PYTHON` points to the interpreter that runs Articraft. You do not need private
+imports or SDK changes.
 
-Working previews can stay under `qa/previews/` without being registered. Use
-`attach_artifact(...)` in `run_tests()` when a preview is useful as final
-evidence.
+Open each useful output with `view_image`. Calling the renderer is not visual inspection.
+
+Working previews can stay under `qa/previews/`. Attach a preview when it is useful final
+evidence:
 
 ```python
 ctx.attach_artifact(
@@ -108,19 +108,24 @@ ctx.attach_artifact(
 )
 ```
 
-The path must be relative to the run workspace. Supported files are PNG, JPEG,
-WebP, JSON, CSV, Markdown, and plain text.
+The path must be relative to the run workspace. `TestArtifact` supports these file types:
 
-## Compile behavior
+- PNG, JPEG, and WebP images.
+- JSON and CSV data.
+- Markdown and plain text.
 
-The compiler does not render or copy images. Registered files stay in the
-workspace. The `compile` tool returns text signals with safe workspace paths for
-registered images and does not attach image content. Open each useful path with
-`view_image`.
+## Understand compilation behavior
 
-## General model views
+The compiler does not render or copy images. Registered files stay in the workspace.
 
-`ModelView` renders visible triangles with a depth buffer.
+The `compile` tool returns safe workspace paths for registered images. It does not attach image
+content.
+
+Open each useful path with `view_image`.
+
+## Render a model view
+
+`ModelView` renders visible triangles with a depth buffer:
 
 ```python
 ModelView(
@@ -139,19 +144,21 @@ ModelView(
 )
 ```
 
-Use `ModelView.front()`, `side()`, `top()`, or `three_quarter()` for a common
-camera. `projection` can be `orthographic` or `perspective`. `color_by` can be
-`part`, `shape`, or `material`.
+Use `ModelView.front()`, `side()`, `top()`, or `three_quarter()` for a common camera.
 
-Use `selected_parts` or `selected_shapes` to isolate important geometry.
-`PointOverlay` marks a world position. `LineOverlay` draws a world segment.
-These overlays can show tracked points, a measured clearance, a contact
-position, a collision normal, or a custom axis.
+`projection` accepts `orthographic` or `perspective`. `color_by` accepts `part`, `shape`, or
+`material`.
+
+Use `selected_parts` or `selected_shapes` to isolate geometry. Use `PointOverlay` for a world
+position and `LineOverlay` for a world segment.
 
 ```python
 tip_path = ctx.track_point("arm", (0.0, 0.0, 0.4), poses)
 view = ModelView.side(
-    points=tuple(PointOverlay(point, label=f"sample {index}") for index, point in enumerate(tip_path)),
+    points=tuple(
+        PointOverlay(point, label=f"sample {index}")
+        for index, point in enumerate(tip_path)
+    ),
     lines=tuple(
         LineOverlay(tip_path[index], tip_path[index + 1])
         for index in range(len(tip_path) - 1)
@@ -159,9 +166,9 @@ view = ModelView.side(
 )
 ```
 
-## Arbitrary sections
+## Render a section
 
-`SectionView` intersects every selected triangle with one plane.
+`SectionView` intersects selected triangles with one plane:
 
 ```python
 SectionView(
@@ -172,11 +179,10 @@ SectionView(
 )
 ```
 
-The horizontal and vertical vectors must lie in the section plane. Leave them
-out when their exact direction is not important.
+The horizontal and vertical vectors must be in the section plane. Omit them when exact
+directions are not necessary.
 
-`MeridionalSectionView` is a focused section for a form built around an axis.
-It is still based on a general plane intersection.
+Use `MeridionalSectionView` for a form around one axis:
 
 ```python
 MeridionalSectionView(
@@ -188,9 +194,9 @@ MeridionalSectionView(
 
 The axis and radial direction must be perpendicular.
 
-## Motion strips
+## Render a motion strip
 
-`MotionStripView` places several poses in one image.
+`MotionStripView` puts several poses in one image:
 
 ```python
 MotionStripView(
@@ -200,13 +206,11 @@ MotionStripView(
 )
 ```
 
-Leave out `positions` to sample the authored motion limits. Continuous joints
-use a half turn.
+Omit `positions` to sample the authored motion limits. A continuous joint uses a half turn.
 
-## Direct rendering
+## Render directly
 
-Local preview code can call `render_view(...)` without creating a test report.
-`render_view` is the public rendering function.
+Call `render_view` from local preview code. You do not need a test report.
 
 ```python
 render_view(
@@ -217,5 +221,5 @@ render_view(
 )
 ```
 
-`render_view(...)` accepts a `ModelView`, `SectionView`,
-`MeridionalSectionView`, or `MotionStripView`. The output must be a PNG.
+`render_view(...)` accepts `ModelView`, `SectionView`, `MeridionalSectionView`, or
+`MotionStripView`. The output file must be PNG.

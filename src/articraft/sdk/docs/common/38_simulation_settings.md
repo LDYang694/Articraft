@@ -1,40 +1,42 @@
 # Simulation settings
 
-These describe the world an object is simulated in and how each part starts moving. They change no
-geometry. Articraft's own viewer and `simulate_usdz` ignore them entirely: local runs always
-use Earth gravity with every part free and at rest. They are written into the USDZ for a downstream
-simulator to read.
+Simulation settings define the world and the initial motion of each body. They do not change
+geometry.
+
+Articraft writes these settings into the USDZ file. The local viewer and `simulate_usdz` use
+Earth gravity with free bodies at rest.
 
 ```python
 from articraft.sdk import BodyState, PhysicsScene
 ```
 
-`PhysicsScene` belongs to the model, because there is one world. `BodyState` belongs to a part,
-because each part is one rigid body. See [assemblies and rigid
-bodies](30_assembly.md) for the structure these attach to.
+One `PhysicsScene` belongs to the assembly. One `BodyState` belongs to each rigid body.
 
 ## `PhysicsScene`
+
+Use `PhysicsScene` to set gravity for the exported world:
 
 ```python
 PhysicsScene(direction: Vec3 = (0.0, 0.0, -1.0), magnitude: float = 9.81)
 ```
 
-One scene belongs to the whole model. The default is Earth gravity down the stage Z up axis, so
-most models never pass it.
+The default is Earth gravity along the negative Z axis:
 
 ```python
-from articraft.sdk import RigidBodyAssembly, PhysicsScene
-
+from articraft.sdk import PhysicsScene, RigidBodyAssembly
 
 moon = RigidBodyAssembly("rover", scene=PhysicsScene(magnitude=1.62))
 ```
 
-`direction` is a world-space direction and is stored normalized, so its length is ignored. It must
-be nonzero. `magnitude` is in m/s^2 and must not be negative; `0.0` is a valid free-fall world. The
-default magnitude is the float constant `EARTH_GRAVITY` (9.81), for a scene that wants to say so
-explicitly: `PhysicsScene(magnitude=EARTH_GRAVITY)`.
+`direction` is a world direction. The constructor normalizes it, so its original length has no
+effect. The direction must be nonzero.
+
+`magnitude` uses meters per second squared. It must be zero or positive. Use `EARTH_GRAVITY`
+when you need the named default constant.
 
 ## `BodyState`
+
+Use `BodyState` to set the initial state of one body:
 
 ```python
 BodyState(
@@ -46,21 +48,22 @@ BodyState(
 )
 ```
 
-Each part is one rigid body, so each part carries one of these. The default is a free body at rest.
+The default is an enabled body at rest:
 
 ```python
 from articraft.sdk import BodyState
 
-
 base = model.rigid_body("base", body_state=BodyState(kinematic=True))
-flywheel = model.rigid_body("flywheel", body_state=BodyState(angular_velocity=(0.0, 0.0, 12.0)))
+flywheel = model.rigid_body(
+    "flywheel",
+    body_state=BodyState(angular_velocity=(0.0, 0.0, 12.0)),
+)
 ```
 
-- `enabled=False` leaves the part in the scene as a static collider. Other bodies still hit it, but
-  no forces act on it.
-- `kinematic=True` means the part is moved by animation rather than by forces. It pushes other
-  bodies; nothing pushes it. A disabled part cannot also be kinematic.
-- `linear_velocity` is in meters per second and `angular_velocity` is in radians per second, both
-  in world coordinates, at the first simulation step. USD stores angular velocity in degrees per
-  second; the exporter converts.
-- `starts_asleep=True` puts the part in the simulator's sleeping set until something touches it.
+- Set `enabled=False` to make a static collider. Forces do not move a disabled body.
+- Set `kinematic=True` when animation moves the body. A disabled body cannot be kinematic.
+- Set `linear_velocity` in meters per second and world coordinates.
+- Set `angular_velocity` in radians per second and world coordinates.
+- Set `starts_asleep=True` to keep the body asleep until an interaction wakes it.
+
+USD stores angular velocity in degrees per second. The exporter converts the SDK value.

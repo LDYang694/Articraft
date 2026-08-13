@@ -1,15 +1,22 @@
-# Mesh authoring SDK
+# Articraft SDK
 
-The articraft SDK is a small Python library for articulated 3D objects. It uses build123d
-solids and procedural triangle meshes. You can use both geometry types in one object.
+Use the Articraft SDK to build articulated 3D objects in Python. You can combine build123d
+solids with procedural triangle meshes.
 
-The public package is `articraft.sdk`. All lengths use meters. Articulation rotations and
-mesh rotations use radians. Build123d rotations use degrees.
+Import the public object API from `articraft.sdk`. Import mesh operations from
+`articraft.sdk.mesh`.
+
+## Use the correct units
+
+Use meters for all lengths and coordinates. Use radians for joint rotations and mesh
+rotations. Build123d rotations use degrees.
+
+The SDK uses right handed XYZ coordinates with Z as the up axis.
 
 ## Create an object
 
-A `RigidBodyAssembly` contains rigid bodies. Each body contains one or more named shapes. Put
-shapes in the same body if they always move together.
+A `RigidBodyAssembly` contains the rigid bodies in one object. Put shapes in the same body
+when they always move together.
 
 ```python
 from build123d import Box
@@ -17,11 +24,11 @@ from build123d import Box
 from articraft.sdk import RigidBodyAssembly, TestContext
 from articraft.sdk.export import export_assembly
 
-
 model = RigidBodyAssembly("box")
-model.rigid_body("body").add(Box(0.1, 0.1, 0.1), name="shell")
-model.validate()
+body = model.rigid_body("body")
+body.add(Box(0.1, 0.1, 0.1), name="shell")
 
+model.validate()
 report = TestContext(model).report()
 assert report.passed
 
@@ -29,89 +36,100 @@ result = export_assembly(model, "output")
 print(result.usdz)
 ```
 
-Each shape must have a name. The name must be unique in its body. A shape can also have an RGB
-or RGBA color.
+Give each shape a unique name within its body. You can also give a shape an RGB or RGBA color.
 
 ## Select a geometry type
 
-Use build123d for exact solids, cuts, and fillets. Also use it for work that depends on faces or
-edges. Add the completed build123d shape directly to a rigid body.
+Use build123d when you need exact solids, cuts, fillets, faces, or edges. Add a completed
+build123d shape directly to a rigid body.
 
-Use `MeshGeometry` to edit vertices or make a procedural surface. Also use it for mesh booleans
-and mesh repair. The SDK has builders for common solids and curved forms. It also has profiles,
-sweeps, section lofts, shells, booleans, welds, and smooth operations.
+Use `MeshGeometry` when you need direct vertex changes or a procedural surface. The mesh API
+also provides booleans, sweeps, lofts, shells, welds, and smoothing.
 
 ```python
-from articraft.sdk import RigidBodyAssembly, RoundedBoxGeometry
+from articraft.sdk import RoundedBoxGeometry
 
-
-model = RigidBodyAssembly("housing")
 housing = RoundedBoxGeometry((0.12, 0.075, 0.028), radius=0.006)
-model.rigid_body("body").add(housing, name="housing", color=(0.25, 0.30, 0.36))
+body.add(housing, name="housing", color=(0.25, 0.30, 0.36))
 ```
 
-`MeshGeometry` has a list of vertices and a list of triangle faces. Its transforms change the
-mesh. They return the same object, so you can use a sequence of transforms. Use `copy()` first if
-you must keep the source mesh.
-
-Build123d and mesh geometry use the same body-local coordinates. Use
-`build123d_to_mesh()` only if a build123d shape must enter a mesh operation.
+Both geometry types use body local coordinates. Convert a build123d shape only when a mesh
+operation needs it.
 
 ## Add motion
 
-A joint connects two rigid bodies and says which of six axes are free. An articulation names
-the tree of joints the simulator solves.
+A joint connects two rigid bodies. Its degrees of freedom specify which axes can move.
+
+An articulation defines the joint tree that the solver uses:
 
 ```python
 from build123d import Box
 
 from articraft.sdk import JointAxis, JointDOF
 
-
 lid = model.rigid_body("lid")
 lid.add(Box(0.1, 0.1, 0.01), name="panel")
 
 model.joint(
     "body_to_lid",
-    model.get_rigid_body("body").at((0.0, 0.05, 0.05)),
+    body.at((0.0, 0.05, 0.05)),
     lid.at(),
     dofs=(JointDOF(JointAxis.ROT_X, limits=(0.0, 1.8)),),
 )
 model.articulation("main", root="body", joints=["body_to_lid"])
 ```
 
-`body.at(...)` binds a point or a build123d `Location`, `Plane`, `Axis`, face,
-edge, or vertex to the body whose coordinates it uses. The two endpoint frames
-coincide at zero. The endpoints are symmetric; the
-articulation independently selects the solver's rooted spanning tree. Closed
-loops author every physical joint and omit the closing constraint from that tree.
+The two joint frames coincide in the reference state. Joint limits must include zero.
 
-## Check and export the object
+Use `body.at(...)` to bind a point or build123d feature to its body. For a closed loop, author
+every physical joint. Omit one closing joint from the articulation tree.
 
-`model.validate()` checks names, geometry, the physical graph, articulation trees, and reference state.
-`TestContext` checks physical relations such as distance, overlap, support, and motion.
+## Check the object
 
-The compiler also does these tests:
+Call `model.validate()` before export. It checks names, geometry, joints, articulation trees,
+and the reference state.
 
-- It finds isolated bodies.
-- It finds disconnected geometry.
-- It finds scale problems.
-- It finds unwanted overlap.
-- It finds joints that separate during motion.
+Use `TestContext` to check distances, overlaps, support, poses, and motion. The compiler also
+checks for isolated bodies and disconnected geometry.
 
-USDZ export is in `articraft.sdk.export`. Thus, a normal SDK import does not load OpenUSD.
-Each `RigidBody` becomes one USD rigid body. Each named shape keeps its mesh and material.
+The compiler reports scale problems, unwanted overlap, and joints that separate during
+motion.
 
-## Reference
+## Export the object
 
-- Start with the [SDK quickstart](../src/articraft/sdk/docs/common/00_quickstart.md).
-- Read the [assembly and rigid-body API](../src/articraft/sdk/docs/common/30_assembly.md).
-- Read the [joint and articulation API](../src/articraft/sdk/docs/common/35_joints.md).
-- Read the [test API](../src/articraft/sdk/docs/common/40_testing.md).
-- Read the [USDZ export API](../src/articraft/sdk/docs/common/50_usdz_export.md).
-- Read the [mesh API](../src/articraft/sdk/docs/mesh/00_mesh_geometry.md).
-- Use the [complete SDK examples](../src/articraft/sdk/docs/examples).
+Import `export_assembly(...)` from `articraft.sdk.export`. This separate import prevents a
+normal SDK import from loading OpenUSD.
 
-The mesh reference has separate pages for profiles, sweeps, and section lofts. It also has pages
-for booleans, shells, welds, and mesh refinement. The package includes a small set of
-[build123d documents](../src/articraft/sdk/docs/build123d).
+The exporter writes a USDZ file and a schema version 2 manifest. Each rigid body becomes one
+USD rigid body.
+
+## Open the reference
+
+Start with the [SDK quickstart](../src/articraft/sdk/docs/common/00_quickstart.md).
+
+### Object structure and motion
+
+- [Shared units and types](../src/articraft/sdk/docs/common/20_core_types.md)
+- [Assemblies and rigid bodies](../src/articraft/sdk/docs/common/30_assembly.md)
+- [Joints and articulations](../src/articraft/sdk/docs/common/35_joints.md)
+- [Materials and mass](../src/articraft/sdk/docs/common/37_materials.md)
+- [Simulation settings](../src/articraft/sdk/docs/common/38_simulation_settings.md)
+
+### Checks and output
+
+- [Errors](../src/articraft/sdk/docs/common/10_errors.md)
+- [Testing](../src/articraft/sdk/docs/common/40_testing.md)
+- [Visual evidence](../src/articraft/sdk/docs/common/45_visual_evidence.md)
+- [USDZ export](../src/articraft/sdk/docs/common/50_usdz_export.md)
+
+### Mesh authoring
+
+- [Mesh geometry and solid builders](../src/articraft/sdk/docs/mesh/00_mesh_geometry.md)
+- [Profiles and curve sampling](../src/articraft/sdk/docs/mesh/10_profiles.md)
+- [Wires, pipes, and sweeps](../src/articraft/sdk/docs/mesh/20_wires_and_sweeps.md)
+- [Section lofts](../src/articraft/sdk/docs/mesh/30_section_lofts.md)
+- [Booleans and shells](../src/articraft/sdk/docs/mesh/40_booleans_and_shells.md)
+- [Refinement and smoothing](../src/articraft/sdk/docs/mesh/50_refinement_and_smoothing.md)
+
+You can also read the [complete examples](../src/articraft/sdk/docs/examples) and the
+[vendored build123d reference](../src/articraft/sdk/docs/build123d).

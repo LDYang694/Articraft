@@ -1,7 +1,6 @@
 # Mesh refinement and smoothing
 
-Use this page to add triangle density or smooth vertex positions after you
-create a mesh.
+Use this page to add triangles or smooth vertex positions after you create a mesh.
 
 All lengths use meters. Every function returns a new `MeshGeometry` and leaves
 the input mesh unchanged.
@@ -14,12 +13,11 @@ from articraft.sdk.mesh import refine_mesh, smooth_mesh, subdivide_mesh
 
 ## Choose an operation
 
-Use `refine_mesh(...)` when you need a maximum edge length. It adds triangles
-without changing the surface.
+Use `refine_mesh(...)` when you need a maximum edge length. It adds triangles without changing
+the surface.
 
-Use `subdivide_mesh(...)` when you want a fixed number of subdivision levels.
-Plain subdivision keeps the surface unchanged. Smooth subdivision rounds the
-surface.
+Use `subdivide_mesh(...)` for a fixed number of subdivision levels. Plain subdivision keeps the
+surface, while smooth subdivision rounds it.
 
 Use `smooth_mesh(...)` when the mesh already has enough triangles and you want
 to smooth uneven vertex positions.

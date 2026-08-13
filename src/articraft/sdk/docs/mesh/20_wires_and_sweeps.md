@@ -1,10 +1,9 @@
 # Wires, pipes, and sweeps
 
-Use this page for swept profiles, circular wires, smooth tubes, authored paths,
-arcs, and tube networks.
+Use this page to create wires, tubes, arcs, and profile sweeps. It also documents tube networks.
 
 All coordinates, radii, and tolerances use meters. All angles use radians.
-Path points are three dimensional values in the final mesh coordinate frame.
+Path points are three dimensional values in the final mesh frame.
 
 This page documents `SweepSection`, `SweepGeometry`, `PipeGeometry`,
 `ArcPipeGeometry`, `WirePath`, `WirePolylineGeometry`, `wire_from_points`,
@@ -30,20 +29,15 @@ from articraft.sdk.mesh import (
 
 ## Choose a helper
 
-- Use `WirePolylineGeometry` or `wire_from_points(...)` for straight segments
-  with optional bevels or rounded corners.
-- Use `tube_from_spline_points(...)` for a smooth circular tube fitted through
-  control points.
-- Use `sweep_profile_along_spline(...)` for a smooth rail with a custom two
-  dimensional profile.
-- Use `PipeGeometry` when you already have the final sampled path.
+- Use `WirePolylineGeometry` or `wire_from_points(...)` for straight segments.
+- Use `tube_from_spline_points(...)` for a smooth circular tube through control points.
+- Use `sweep_profile_along_spline(...)` for a smooth custom profile.
+- Use `PipeGeometry` when you have the final sampled path.
 - Use `ArcPipeGeometry` for one exact circular arc.
-- Use `tube_network_from_paths(...)` when several circular paths must be joined
-  into one mesh.
+- Use `tube_network_from_paths(...)` to join several circular paths.
 
-Use `SweepSection` with any single path sweep when the profile should change
-along the path. A section can change the profile shape, size, local rotation,
-or local offset.
+Use `SweepSection` when a profile must change along one path. A section can change shape, size,
+local rotation, or local offset.
 
 ## SweepSection
 
@@ -485,10 +479,11 @@ centerline contains a segment shorter than `min_segment_length`. Lower the
 minimum only after checking that the control points do not contain accidental
 duplicates.
 
-The profile orientation follows the selected path frame. Use `up_hint` to
-control its initial roll, or use fixed up mode to keep the profile aligned to
-the hint along the complete path. Sweep sections use normalized distance along
-the sampled spline.
+The profile orientation follows the selected path frame. Use `up_hint` to control the initial
+roll.
+
+Use fixed up mode to align the profile along the complete path. Sweep sections use normalized
+distance along the sampled spline.
 
 ```python
 from articraft.sdk.mesh import rounded_rect_profile
