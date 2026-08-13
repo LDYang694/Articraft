@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 import fcl
+import igl
 import manifold3d
 import numpy as np
 import trimesh
+from scipy import sparse
+from scipy.sparse.csgraph import connected_components
 
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
 from articraft.sdk.assembly import PhysicsState, RigidBodyAssembly
@@ -404,7 +407,7 @@ def _component_connectivity(
     *,
     contact_tol: float,
 ) -> tuple[list[set[int]], dict[int, tuple[int, float]]]:
-    adjacency: dict[int, set[int]] = {index: set() for index in range(len(components))}
+    touching: list[tuple[int, int]] = []
     nearest: dict[int, tuple[int, float]] = {}
     for index, component in enumerate(components):
         for other_index in range(index + 1, len(components)):
@@ -415,26 +418,17 @@ def _component_connectivity(
                 if solid_intersection is not None and solid_intersection > 0.0:
                     collided, distance = True, 0.0
             if collided or distance <= contact_tol:
-                adjacency[index].add(other_index)
-                adjacency[other_index].add(index)
+                touching.append((index, other_index))
             _remember_nearest(nearest, index, other_index, distance)
             _remember_nearest(nearest, other_index, index, distance)
 
-    remaining = set(range(len(components)))
-    groups: list[set[int]] = []
-    while remaining:
-        start = min(remaining)
-        group: set[int] = set()
-        stack = [start]
-        remaining.remove(start)
-        while stack:
-            current = stack.pop()
-            group.add(current)
-            for neighbor in sorted(adjacency[current]):
-                if neighbor in remaining:
-                    remaining.remove(neighbor)
-                    stack.append(neighbor)
-        groups.append(group)
+    count = len(components)
+    graph = sparse.coo_matrix(
+        (np.ones(len(touching)), tuple(np.asarray(touching, dtype=np.int64).reshape(-1, 2).T)),
+        shape=(count, count),
+    )
+    group_count, labels = connected_components(graph, directed=False)
+    groups = [set(map(int, np.flatnonzero(labels == label))) for label in range(group_count)]
     return groups, nearest
 
 
@@ -552,39 +546,18 @@ def _open_mesh_buried(mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh) -> bool:
             continue
         vertices = np.asarray(contents.vertices, dtype=np.float64)
         probes = vertices[:: max(1, len(vertices) // 8)][:8]
-        inside = _ray_parity_inside(container, probes)
+        # Winding numbers are immune to the edge-grazing rays that break
+        # crossing-parity tests; the majority vote stays as cheap insurance
+        # against probes that land exactly on the container's surface.
+        winding = igl.fast_winding_number(
+            np.ascontiguousarray(container.vertices, dtype=np.float64),
+            np.ascontiguousarray(container.faces, dtype=np.int64),
+            np.ascontiguousarray(probes),
+        )
+        inside = np.asarray(winding) > 0.5
         if len(inside) and int(np.count_nonzero(inside)) * 2 > len(inside):
             return True
     return False
-
-
-def _ray_parity_inside(mesh: trimesh.Trimesh, points: np.ndarray) -> np.ndarray:
-    """Point-in-watertight-mesh by ray crossing parity (Moller-Trumbore).
-
-    Self-contained on purpose: trimesh's own containment queries require the
-    optional rtree package. A handful of probe points against every triangle
-    is cheap, and the caller takes a majority vote so one edge-grazing ray
-    cannot decide the answer alone.
-    """
-
-    triangles = np.asarray(mesh.triangles, dtype=np.float64)
-    origin_edge = triangles[:, 1] - triangles[:, 0]
-    far_edge = triangles[:, 2] - triangles[:, 0]
-    direction = np.asarray((0.2743, 0.6712, 0.6886), dtype=np.float64)
-    perpendicular = np.cross(direction, far_edge)
-    determinant = np.einsum("ij,ij->i", origin_edge, perpendicular)
-    valid = np.abs(determinant) > 1e-12
-    safe_det = np.where(valid, determinant, 1.0)
-    inside = np.zeros(len(points), dtype=bool)
-    for index, point in enumerate(points):
-        offset = point - triangles[:, 0]
-        u = np.einsum("ij,ij->i", offset, perpendicular) / safe_det
-        cross = np.cross(offset, origin_edge)
-        v = (cross @ direction) / safe_det
-        t = np.einsum("ij,ij->i", far_edge, cross) / safe_det
-        hits = valid & (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > 1e-9)
-        inside[index] = bool(np.count_nonzero(hits) % 2)
-    return inside
 
 
 def _meshes_have_overlapping_bounds(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:
