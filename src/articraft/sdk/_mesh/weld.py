@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import math
 
+import fcl
 import igl
 import manifold3d
 import numpy as np
+from scipy import sparse
+from scipy.sparse.csgraph import connected_components
 from trimesh import Trimesh
 
 from articraft.sdk._mesh.boolean import (
@@ -29,37 +32,43 @@ class SnapRefused(ValueError):
     """Raised when snapping a piece to touch would move it further than allowed."""
 
 
-def _closest_points(mesh: Trimesh, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    squared, _faces, closest = igl.point_mesh_squared_distance(
-        np.ascontiguousarray(points, dtype=np.float64),
-        np.ascontiguousarray(mesh.vertices, dtype=np.float64),
-        np.ascontiguousarray(mesh.faces, dtype=np.int64),
-    )
-    distances = np.sqrt(np.maximum(np.asarray(squared, dtype=np.float64), 0.0))
-    return np.asarray(closest, dtype=np.float64), distances
-
-
 def _require_mesh(geometry: object, label: str) -> MeshGeometry:
     if not isinstance(geometry, MeshGeometry):
         raise TypeError(f"{label} must be MeshGeometry")
     return geometry
 
 
+def _collision_object(mesh: Trimesh) -> fcl.CollisionObject:
+    model = fcl.BVHModel()
+    model.beginModel(len(mesh.vertices), len(mesh.faces))
+    model.addSubModel(
+        np.ascontiguousarray(mesh.vertices, dtype=np.float64),
+        np.ascontiguousarray(mesh.faces, dtype=np.int32),
+    )
+    model.endModel()
+    return fcl.CollisionObject(model, fcl.Transform())
+
+
 def _nearest_gap(anchor: MeshGeometry, piece: MeshGeometry) -> tuple[float, np.ndarray]:
-    """Smallest surface gap between two solids and the unit direction piece -> anchor."""
-    a_mesh = anchor.to_trimesh()
-    b_mesh = piece.to_trimesh()
-    points_on_a, dist_b = _closest_points(a_mesh, b_mesh.vertices)
-    i = int(np.argmin(dist_b))
-    point_a, point_b, dist = points_on_a[i], b_mesh.vertices[i], float(dist_b[i])
-    points_on_b, dist_a = _closest_points(b_mesh, a_mesh.vertices)
-    j = int(np.argmin(dist_a))
-    if dist_a[j] < dist:
-        point_a, point_b, dist = a_mesh.vertices[j], points_on_b[j], float(dist_a[j])
-    direction = np.asarray(point_a, dtype=np.float64) - np.asarray(point_b, dtype=np.float64)
+    """Smallest surface gap between two solids and the unit direction piece -> anchor.
+
+    FCL measures the true surface-to-surface minimum, so a gap whose closest
+    approach is edge-to-edge or face-to-face reads exactly; sampling one mesh's
+    vertices against the other's surface would under-report it.
+    """
+
+    anchor_obj = _collision_object(anchor.to_trimesh())
+    piece_obj = _collision_object(piece.to_trimesh())
+    if int(fcl.collide(anchor_obj, piece_obj, fcl.CollisionRequest(), fcl.CollisionResult())) > 0:
+        return 0.0, np.zeros(3)
+    request = fcl.DistanceRequest(enable_nearest_points=True)
+    result = fcl.DistanceResult()
+    dist = float(fcl.distance(anchor_obj, piece_obj, request, result))
+    point_a, point_b = (np.asarray(point, dtype=np.float64) for point in result.nearest_points)
+    direction = point_a - point_b
     norm = float(np.linalg.norm(direction))
     unit = direction / norm if norm > 1e-12 else np.zeros(3)
-    return dist, unit
+    return max(dist, 0.0), unit
 
 
 def _smooth_max(first: np.ndarray, second: np.ndarray, radius: float, profile: str) -> np.ndarray:
@@ -95,13 +104,8 @@ def _grid_points(
     lower: np.ndarray,
     spacing: np.ndarray,
 ) -> np.ndarray:
-    flat = np.arange(start, stop, dtype=np.int64)
-    yz = int(dimensions[1] * dimensions[2])
-    x = flat // yz
-    remainder = flat - x * yz
-    y = remainder // dimensions[2]
-    z = remainder - y * dimensions[2]
-    return lower + np.column_stack((x, y, z)) * spacing
+    coordinates = np.unravel_index(np.arange(start, stop, dtype=np.int64), tuple(dimensions))
+    return lower + np.column_stack(coordinates) * spacing
 
 
 def _extract_level_set(
@@ -109,11 +113,8 @@ def _extract_level_set(
 ) -> MeshGeometry:
     nx, ny, nz = (int(value) for value in dimensions)
     point_count = len(field)
-    flat = np.arange(point_count, dtype=np.int64)
-    x = flat % nx
-    y = (flat // nx) % ny
-    z = flat // (nx * ny)
-    grid_vertices = lower + np.column_stack((x, y, z)) * spacing
+    coordinates = np.unravel_index(np.arange(point_count, dtype=np.int64), (nx, ny, nz), order="F")
+    grid_vertices = lower + np.column_stack(coordinates) * spacing
     samples = np.ascontiguousarray(field.reshape((nx, ny, nz)).ravel(order="F"))
     vertices, faces, _edges = igl.marching_cubes(
         samples,
@@ -178,25 +179,20 @@ def _connection_gaps(
 
 
 def _require_connected_inputs(geometries: tuple[MeshGeometry, ...], *, max_gap: float) -> None:
-    connected = {0}
     gaps = _connection_gaps(geometries)
-    while True:
-        additions = {
-            second if first in connected else first
-            for first, second, gap in gaps
-            if gap <= max_gap and ((first in connected) != (second in connected))
-        }
-        if not additions:
-            break
-        connected.update(additions)
-    if len(connected) != len(geometries):
-        nearest = min(
-            gap for first, second, gap in gaps if (first in connected) != (second in connected)
-        )
-        raise ValueError(
-            f"weld inputs are separated by {nearest * 1000.0:.2f} mm; overlap them or "
-            "increase max_gap"
-        )
+    close = [(first, second) for first, second, gap in gaps if gap <= max_gap]
+    graph = sparse.coo_matrix(
+        (np.ones(len(close)), tuple(np.asarray(close, dtype=np.int64).reshape(-1, 2).T)),
+        shape=(len(geometries), len(geometries)),
+    )
+    _count, labels = connected_components(graph, directed=False)
+    if np.all(labels == labels[0]):
+        return
+    connected = labels == labels[0]
+    nearest = min(gap for first, second, gap in gaps if connected[first] != connected[second])
+    raise ValueError(
+        f"weld inputs are separated by {nearest * 1000.0:.2f} mm; overlap them or increase max_gap"
+    )
 
 
 def _surface_controls(

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import cast
 
+import numpy as np
+from scipy.interpolate import CubicHermiteSpline  # pyright: ignore[reportMissingTypeStubs]
+
 from articraft.sdk._mesh.core import (
     _EPS,
     MeshGeometry,
@@ -347,34 +350,22 @@ def _path_frames(
 def _resample_profile(points: Sequence[Vec2], count: int, *, closed: bool) -> list[Vec2]:
     if len(points) == count:
         return list(points)
-    edge_count = len(points) if closed else len(points) - 1
-    lengths = [0.0]
-    for index in range(edge_count):
-        start, end = points[index], points[(index + 1) % len(points)]
-        lengths.append(lengths[-1] + math.dist(start, end))
-    total = lengths[-1]
+    array = np.asarray(points, dtype=np.float64)
+    ring = np.vstack((array, array[:1])) if closed else array
+    lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ring, axis=0), axis=1))])
+    total = float(lengths[-1])
     if total <= _EPS:
         raise ValueError("sweep profile perimeter must be positive")
-    targets = (
-        [total * index / count for index in range(count)]
-        if closed
-        else [total * index / (count - 1) for index in range(count)]
-    )
-    result: list[Vec2] = []
-    edge = 0
-    for target in targets:
-        while edge + 1 < len(lengths) - 1 and lengths[edge + 1] < target:
-            edge += 1
-        span = lengths[edge + 1] - lengths[edge]
-        amount = 0.0 if span <= _EPS else (target - lengths[edge]) / span
-        start, end = points[edge], points[(edge + 1) % len(points)]
-        result.append(
-            (
-                start[0] + (end[0] - start[0]) * amount,
-                start[1] + (end[1] - start[1]) * amount,
-            )
+    divisor = count if closed else count - 1
+    targets = total * np.arange(count, dtype=np.float64) / divisor
+    return [
+        (float(x), float(y))
+        for x, y in zip(
+            np.interp(targets, lengths, ring[:, 0]),
+            np.interp(targets, lengths, ring[:, 1]),
+            strict=True,
         )
-    return result
+    ]
 
 
 def _profile_distance(a: Sequence[Vec2], b: Sequence[Vec2]) -> float:
@@ -482,15 +473,15 @@ def _profile_derivative(
     previous_position: float,
     following_position: float,
     tension: float,
-) -> list[Vec2]:
+) -> np.ndarray:
     span = following_position - previous_position
     if span <= _EPS:
-        return [(0.0, 0.0) for _ in previous.points]
+        return np.zeros((len(previous.points), 2))
     scale = (1.0 - tension) / span
-    return [
-        ((end[0] - start[0]) * scale, (end[1] - start[1]) * scale)
-        for start, end in zip(previous.points, following.points, strict=True)
-    ]
+    return scale * (
+        np.asarray(following.points, dtype=np.float64)
+        - np.asarray(previous.points, dtype=np.float64)
+    )
 
 
 def _smooth_profile_span(
@@ -536,31 +527,20 @@ def _smooth_profile_span(
         following_position=following_position,
         tension=start.tension,
     )
-    amount2, amount3 = amount * amount, amount * amount * amount
-    h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0
-    h10 = amount3 - 2.0 * amount2 + amount
-    h01 = -2.0 * amount3 + 3.0 * amount2
-    h11 = amount3 - amount2
-    span = end.position - start.position
-    return [
-        (
-            h00 * first[0]
-            + h10 * span * first_derivative[0]
-            + h01 * second[0]
-            + h11 * span * second_derivative[0],
-            h00 * first[1]
-            + h10 * span * first_derivative[1]
-            + h01 * second[1]
-            + h11 * span * second_derivative[1],
-        )
-        for first, second, first_derivative, second_derivative in zip(
-            start.points,
-            end.points,
-            start_derivative,
-            end_derivative,
-            strict=True,
-        )
-    ]
+    # The section blend is a cardinal segment; scipy evaluates the same
+    # Hermite cubic from the section profiles and their end derivatives.
+    spline = CubicHermiteSpline(
+        np.asarray((start.position, end.position)),
+        np.stack(
+            (
+                np.asarray(start.points, dtype=np.float64),
+                np.asarray(end.points, dtype=np.float64),
+            )
+        ),
+        np.stack((start_derivative, end_derivative)),
+    )
+    values = spline(start.position + (end.position - start.position) * amount)
+    return [(float(x), float(y)) for x, y in values]
 
 
 def _profile_at(

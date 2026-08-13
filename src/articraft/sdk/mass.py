@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import trimesh
+from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk._values import Vec3, _as_vec3, _positive
 from articraft.sdk.errors import ValidationError
@@ -294,30 +295,5 @@ def _combine(meshes: list[trimesh.Trimesh], *, part_name: str) -> trimesh.Trimes
 def _quaternion(rotation: np.ndarray) -> tuple[float, float, float, float]:
     """A (w, x, y, z) quaternion for a right-handed rotation matrix."""
 
-    trace = float(rotation[0, 0] + rotation[1, 1] + rotation[2, 2])
-    if trace > 0.0:
-        scale = 0.5 / ((trace + 1.0) ** 0.5)
-        w = 0.25 / scale
-        x = float(rotation[2, 1] - rotation[1, 2]) * scale
-        y = float(rotation[0, 2] - rotation[2, 0]) * scale
-        z = float(rotation[1, 0] - rotation[0, 1]) * scale
-    elif rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
-        scale = 2.0 * ((1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) ** 0.5)
-        w = float(rotation[2, 1] - rotation[1, 2]) / scale
-        x = 0.25 * scale
-        y = float(rotation[0, 1] + rotation[1, 0]) / scale
-        z = float(rotation[0, 2] + rotation[2, 0]) / scale
-    elif rotation[1, 1] > rotation[2, 2]:
-        scale = 2.0 * ((1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) ** 0.5)
-        w = float(rotation[0, 2] - rotation[2, 0]) / scale
-        x = float(rotation[0, 1] + rotation[1, 0]) / scale
-        y = 0.25 * scale
-        z = float(rotation[1, 2] + rotation[2, 1]) / scale
-    else:
-        scale = 2.0 * ((1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) ** 0.5)
-        w = float(rotation[1, 0] - rotation[0, 1]) / scale
-        x = float(rotation[0, 2] + rotation[2, 0]) / scale
-        y = float(rotation[1, 2] + rotation[2, 1]) / scale
-        z = 0.25 * scale
-    norm = (w * w + x * x + y * y + z * z) ** 0.5
-    return (w / norm, x / norm, y / norm, z / norm)
+    w, x, y, z = Rotation.from_matrix(rotation).as_quat(canonical=True, scalar_first=True)
+    return (float(w), float(x), float(y), float(z))

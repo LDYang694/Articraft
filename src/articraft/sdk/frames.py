@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
-import trimesh
 from build123d import Axis, Location, Plane, Vector
 from build123d.topology import Edge, Face, Shape, Vertex
+from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk._mesh.core import MeshGeometry
 from articraft.sdk._values import _as_vec3 as _vec3
@@ -137,13 +138,27 @@ def _edge_location(edge: Edge) -> Location:
     return Axis(edge.center(), edge.tangent_at()).location
 
 
+def _matrix_rpy(rotation: np.ndarray) -> np.ndarray:
+    """Extrinsic XYZ Euler angles of a rotation matrix.
+
+    At gimbal lock scipy warns that it zeroes the third angle. That is simply
+    one of the equivalent decompositions of an ambiguous reading, so the
+    warning is suppressed; callers that must tell the splits apart already
+    reconcile against the recomposed rotation.
+    """
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return Rotation.from_matrix(rotation).as_euler("xyz")
+
+
 def _location_frame(location: Location) -> JointFrame:
     transform = location.wrapped.Transformation()
-    matrix = np.identity(4, dtype=np.float64)
-    for row in range(3):
-        for column in range(4):
-            matrix[row, column] = transform.Value(row + 1, column + 1)
-    orientation = trimesh.transformations.euler_from_matrix(matrix, axes="sxyz")
+    matrix = np.asarray(
+        [[transform.Value(row + 1, column + 1) for column in range(4)] for row in range(3)],
+        dtype=np.float64,
+    )
+    orientation = _matrix_rpy(matrix[:, :3])
     return JointFrame(
         xyz=(float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3])),
         rpy=(

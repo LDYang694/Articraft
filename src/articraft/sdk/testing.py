@@ -9,9 +9,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, cast
 
+import igl
 import numpy as np
 import trimesh
-from scipy.spatial import cKDTree  # pyright: ignore[reportAttributeAccessIssue]
 
 from articraft.sdk._collision import (
     Bounds,
@@ -743,12 +743,23 @@ class TestContext:
             raise ValidationError("plane_normal must be non-zero")
         normal /= length
         tolerance = _non_negative(tolerance, "tolerance")
-        vertices = self._selected_world_vertices(part, shape)
-        if len(vertices) > 20_000:
-            vertices = vertices[np.linspace(0, len(vertices) - 1, 20_000, dtype=int)]
-        reflected = vertices - 2.0 * np.outer((vertices - origin) @ normal, normal)
-        distances, _indices = cKDTree(vertices).query(reflected, workers=1)
-        deviation = float(np.max(distances, initial=0.0))
+        meshes = self._selected_world_meshes(part, shape)
+        combined = meshes[0] if len(meshes) == 1 else trimesh.util.concatenate(meshes)
+        surface = np.asarray(combined.vertices, dtype=np.float64)
+        samples = surface
+        if len(samples) > 20_000:
+            samples = samples[np.linspace(0, len(samples) - 1, 20_000, dtype=int)]
+        reflected = samples - 2.0 * np.outer((samples - origin) @ normal, normal)
+        # Measure the reflection against the surface, not the vertex set: a
+        # symmetric surface whose two halves are tessellated differently has
+        # no matching vertices, and the nearest-vertex distance would report
+        # that meshing accident as an asymmetry of the part.
+        squared, _faces, _closest = igl.point_mesh_squared_distance(
+            np.ascontiguousarray(reflected),
+            surface,
+            np.ascontiguousarray(combined.faces, dtype=np.int64),
+        )
+        deviation = float(math.sqrt(max(float(np.max(squared, initial=0.0)), 0.0)))
         selector = _geometry_selector(part, shape)
         return self.expect_metric(
             name or f"symmetry_deviation({selector})",
@@ -1675,17 +1686,9 @@ def _geometry_selector(part: RigidBodyRef | None, shape: str | None) -> str:
 
 
 def _signed_mesh_volume(mesh: trimesh.Trimesh) -> float:
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    faces = np.asarray(mesh.faces, dtype=np.int64)
-    triangles = vertices[faces]
-    return float(
-        np.einsum(
-            "ij,ij->i",
-            triangles[:, 0],
-            np.cross(triangles[:, 1], triangles[:, 2]),
-        ).sum()
-        / 6.0
-    )
+    # trimesh's surface integral keeps the winding sign, which is the signal
+    # the orientation checks read.
+    return float(mesh.volume)
 
 
 def _pose_dicts(
@@ -1725,11 +1728,9 @@ def _articulation_sweep_values(
         return [0.0]
     if high <= low:
         return [low]
-    # Clamp against float overshoot: the last step can land a hair past the
-    # upper limit and a strict limit check would reject the joint's own range.
-    return [
-        min(max(low + (high - low) * index / (samples - 1), low), high) for index in range(samples)
-    ]
+    # linspace hits both limits exactly, so the strict limit check never sees
+    # a last step that lands a hair past the joint's own range.
+    return [float(value) for value in np.linspace(low, high, samples)]
 
 
 def _articulation_name(value: object) -> str:

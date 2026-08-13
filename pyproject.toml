@@ -32,7 +32,8 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "python-fcl>=0.7.0.11",
     "rich>=13.0.0",
-    "scipy>=1.11.0",
+    # Rotation.as_quat(scalar_first=) arrived in 1.14.
+    "scipy>=1.14",
     "trimesh>=4.11.3",
     "typer>=0.12.0",
     # 26.8 fails to publish the temporary USDZ on macOS arm64.
@@ -47,7 +48,8 @@ Issues = "https://github.com/mattzh72/articraft/issues"
 
 [dependency-groups]
 sim = [
-    "mujoco>=3.2",
+    # MjSpec, which the translator builds models with, is stable since 3.3.
+    "mujoco>=3.3",
 ]
 dev = [
     "basedpyright>=1.39.9",

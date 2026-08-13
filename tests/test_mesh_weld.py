@@ -141,6 +141,20 @@ def test_snap_to_closes_a_small_gap() -> None:
     assert fused.to_trimesh().body_count == 1
 
 
+def test_snap_to_measures_edge_to_edge_gaps_exactly() -> None:
+    # Rotated about perpendicular axes, the boxes' closest approach is between
+    # two skew mid-edges, far from every vertex. Sampling one mesh's vertices
+    # against the other's surface overstates this gap six-fold and would
+    # refuse the snap.
+    lower = BoxGeometry((0.04, 0.04, 0.04)).rotate_x(np.pi / 4)
+    upper = BoxGeometry((0.04, 0.04, 0.04)).rotate_y(np.pi / 4).translate(0.0, 0.0, 0.06)
+    gap = 0.06 - 0.04 * float(np.sqrt(2.0))
+    before = np.asarray(upper.to_trimesh().vertices.mean(axis=0))
+    moved = snap_to(lower, upper, overlap=0.0, max_move=gap * 1.2)
+    after = np.asarray(moved.to_trimesh().vertices.mean(axis=0))
+    assert float(np.linalg.norm(after - before)) == pytest.approx(gap, abs=1e-6)
+
+
 def test_snap_to_refuses_a_move_beyond_max() -> None:
     barrel = CylinderGeometry(0.008, 0.02, radial_segments=16).rotate_y(np.pi / 2)
     cap = SphereGeometry(0.02, width_segments=16, height_segments=8).translate(0.0, 0.03, 0.0)
