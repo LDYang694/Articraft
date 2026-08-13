@@ -289,31 +289,33 @@ def _physics_poses(
     # give a sliding object half the ramp and the reel half the journey.
     downhill = (math.cos(tilt), 0.0, -math.sin(tilt))
     shift = reach * (runway - 1.0)
+    seat = [
+        -half[2] * normal[0] + shift * downhill[0],
+        0.0,
+        -half[2] * normal[2] + shift * downhill[2],
+    ]
+    ramp_payload = {"size": list(half), "pos": list(seat), "tilt": [ramp]}
     for geom in spec.worldbody.geoms:
         if geom.name == "floor":
-            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            # The mujoco stubs omit these enums, though they are there at runtime.
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX  # pyright: ignore[reportAttributeAccessIssue]
             geom.size = half
             geom.quat = [math.cos(tilt / 2), 0.0, math.sin(tilt / 2), 0.0]
-            geom.pos = [
-                -half[2] * normal[0] + shift * downhill[0],
-                0.0,
-                -half[2] * normal[2] + shift * downhill[2],
-            ]
-            ramp_payload = {"size": list(half), "pos": list(geom.pos), "tilt": [ramp]}
+            geom.pos = seat
 
     # Drive the joints through servos rather than by writing qpos. A loop
     # closure is a constraint the solver enforces while stepping, and writing
     # positions outright walks straight through it: that is what pulls a landing
     # gear's actuator rod off the strut it is pinned to while the object floats.
     for joint in spec.joints:
-        if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+        if joint.type == mujoco.mjtJoint.mjJNT_FREE:  # pyright: ignore[reportAttributeAccessIssue]
             continue
         servo = spec.add_actuator()
         servo.name = f"drive_{joint.name}"
-        servo.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        servo.trntype = mujoco.mjtTrn.mjTRN_JOINT  # pyright: ignore[reportAttributeAccessIssue]
         servo.target = joint.name
-        servo.gaintype = mujoco.mjtGain.mjGAIN_FIXED
-        servo.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+        servo.gaintype = mujoco.mjtGain.mjGAIN_FIXED  # pyright: ignore[reportAttributeAccessIssue]
+        servo.biastype = mujoco.mjtBias.mjBIAS_AFFINE  # pyright: ignore[reportAttributeAccessIssue]
 
     model = spec.compile()
     data = mujoco.MjData(model)
@@ -332,7 +334,11 @@ def _physics_poses(
         model.actuator_biasprm[actuator, 1] = -inertia * band * band
         model.actuator_biasprm[actuator, 2] = -2.0 * inertia * band
 
-    free = [j for j in range(model.njnt) if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
+    free = [
+        j
+        for j in range(model.njnt)
+        if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE  # pyright: ignore[reportAttributeAccessIssue]
+    ]
     driven = [
         j
         for j in range(model.njnt)
@@ -352,7 +358,7 @@ def _physics_poses(
             # open end finishes pointing at the sky or at the ramp.
             turn = math.radians(roll)
             spun = np.zeros(4)
-            mujoco.mju_mulQuat(
+            mujoco.mju_mulQuat(  # pyright: ignore[reportAttributeAccessIssue]
                 spun,
                 np.array([math.cos(turn / 2), math.sin(turn / 2), 0.0, 0.0]),
                 rest[adr + 3 : adr + 7],
