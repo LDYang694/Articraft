@@ -534,7 +534,9 @@ def _arguments(call: dict[str, Any]) -> dict[str, Any]:
 def _supports_parallel(call: dict[str, Any]) -> bool:
     try:
         name = str(call["name"])
-        return name == "read" and tools.get(name).supports_parallel
+        if name in {"write", "edit", "exec_command", "write_stdin", "compile"}:
+            return False
+        return tools.get(name).supports_parallel
     except (KeyError, ValueError):
         return False
 
@@ -684,7 +686,7 @@ def _read_sdk_quickstart(*, include_images: bool = True) -> str:
         "This SDK quickstart is preloaded for the run. Use it as the first "
         "reference. Before writing code, inspect the current script and survey "
         "the relevant SDK pages across plausible build123d and mesh approaches. "
-        "Use parallel reads when comparing independent references. Do not stop "
+        "Use parallel reads and image views when comparing independent references. Do not stop "
         "at the first workable API.\n\n"
         f"{quickstart.rstrip()}\n"
         "</sdk_quickstart>"

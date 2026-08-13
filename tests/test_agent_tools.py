@@ -54,7 +54,7 @@ def test_tool_schemas_include_prompting_guidance() -> None:
     )
     assert "appears exactly once" in edit_props["old_text"]["description"]
     assert get("read").supports_parallel is True
-    assert get("view_image").supports_parallel is False
+    assert get("view_image").supports_parallel is True
     assert get("exec_command").supports_parallel is False
 
 

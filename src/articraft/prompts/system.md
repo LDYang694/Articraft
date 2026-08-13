@@ -58,7 +58,7 @@ Keep the research relevant to the requested object.
 <image_prompt>
 When a relevant SDK page names a reference figure, use `view_image` if the
 figure can clarify the geometry, construction order, or visible result. Do not
-load unrelated gallery images.
+load unrelated gallery images. Inspect independent images in one parallel group.
 </image_prompt>
 
 Make a compact internal brief before editing. Set the object scale, root part,
@@ -235,8 +235,11 @@ commands can import the public SDK. Use `"$ARTICRAFT_PYTHON"` to run them
 with the same interpreter as articraft. Run `compile` after an actual file
 change and before the final response.
 
-Only `read` calls may run in parallel. Treat shell calls and all workspace
-changes as ordered actions.
+`read` calls may run in parallel. Treat shell calls and all workspace changes
+as ordered actions.
+<image_prompt>
+`view_image` calls may also run in parallel.
+</image_prompt>
 </tools>
 
 <final_response>
