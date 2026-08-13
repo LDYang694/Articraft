@@ -55,12 +55,41 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environmentIntensity = 0.78;
 
 // A ground plane that takes shadow but not color, so panels sit on the page.
+// When the shot is simulated it carries the same incline the physics used, so
+// the shadow tracks the ramp the objects are actually sliding down.
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(500, 500),
   new THREE.ShadowMaterial({ opacity: 0.11 }),
 );
 ground.receiveShadow = true;
 scene.add(ground);
+
+// A simulated shot slides its object off a real slab, so the slab is drawn:
+// an invisible shadow catcher would leave the object drifting down a slope
+// nothing on the page explains. Sized per panel from what the physics used.
+const slab = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({
+    color: 0xd3d8e2,
+    roughness: 0.95,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0,
+  }),
+);
+slab.receiveShadow = true;
+slab.visible = false;
+scene.add(slab);
+
+function useRamp(ramp) {
+  ground.visible = !ramp;
+  slab.visible = Boolean(ramp);
+  if (!ramp) return;
+  const [hx, hy, hz] = ramp.size;
+  slab.scale.set(hx * 2, hy * 2, hz * 2);
+  slab.position.set(...ramp.pos);
+  slab.rotation.set(0, (ramp.tilt[0] * Math.PI) / 180, 0);
+}
 
 const materialsOf = (mesh) => (Array.isArray(mesh.material) ? mesh.material : [mesh.material]);
 
@@ -131,11 +160,15 @@ for (const [index, panel] of config.panels.entries()) {
   // One camera distance for every pose and angle, so the object holds its size
   // as it turns. Fitting the projected corners rather than a bounding sphere
   // keeps thin objects — a tripod, a gripper — from swimming in empty frame.
+  // A simulated shot is framed on the part before gravity, while the object is
+  // still hanging and working its joints. Fitting the slide as well would zoom
+  // out to wherever it ended up and leave the object a speck for the whole reel.
   const box = new THREE.Box3();
   const center = new THREE.Vector3();
   const cages = [];
   let floor = Infinity;
-  for (const values of panel.poses) {
+  const framed = panel.poses.slice(0, config.fit || panel.poses.length);
+  for (const values of framed) {
     pose(joints, values);
     root.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(root);
@@ -144,13 +177,24 @@ for (const [index, panel] of config.panels.entries()) {
     cages.push(bounds);
   }
   box.getCenter(center);
-  ground.position.z = floor;
+  useRamp(panel.ramp);
+  if (!panel.ramp) ground.position.z = floor;
 
   const corners = [];
   for (const bounds of cages) {
     for (const x of [bounds.min.x, bounds.max.x])
       for (const y of [bounds.min.y, bounds.max.y])
         for (const z of [bounds.min.z, bounds.max.z])
+          corners.push(new THREE.Vector3(x, y, z).sub(center));
+  }
+  if (panel.ramp) {
+    // Frame the slab too, or the edge the object leaves is off screen and the
+    // slide reads as the object simply vanishing.
+    slab.updateMatrixWorld(true);
+    const edge = new THREE.Box3().setFromObject(slab);
+    for (const x of [edge.min.x, edge.max.x])
+      for (const y of [edge.min.y, edge.max.y])
+        for (const z of [edge.min.z, edge.max.z])
           corners.push(new THREE.Vector3(x, y, z).sub(center));
   }
   // Scale the rig to the object. These run from a 0.2 m gripper to a 5 m
@@ -180,10 +224,12 @@ for (const [index, panel] of config.panels.entries()) {
   });
   key.shadow.camera.updateProjectionMatrix();
 
+  // Where the orbit starts. Some objects only read from one side.
+  const turn = ((panel.phase || 0) * Math.PI) / 180;
   const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
   let distance = 0;
   for (let frame = 0; frame < frames; frame++) {
-    const angle = (2 * Math.PI * frame) / frames;
+    const angle = (2 * Math.PI * frame) / frames + turn;
     const forward = new THREE.Vector3(Math.cos(angle), Math.sin(angle), elevation).normalize();
     const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 0, 1)).normalize();
     const up = new THREE.Vector3().crossVectors(right, forward).normalize();
@@ -197,9 +243,19 @@ for (const [index, panel] of config.panels.entries()) {
   }
   distance *= zoom;
   for (let frame = 0; frame < frames; frame++) {
-    const angle = (2 * Math.PI * frame) / frames;
+    const angle = (2 * Math.PI * frame) / frames + turn;
     pose(joints, panel.poses[frame]);
     root.updateMatrixWorld(true);
+    if (panel.ramp) {
+      // The ramp arrives with gravity, a little ahead of it so there is
+      // something to land on. Until then the object is just hanging and
+      // working its joints, and a slab under it only asks why it is not
+      // falling.
+      const lead = 4;
+      const fade = (frame - ((config.fit || 0) - lead)) / lead;
+      slab.material.opacity = Math.min(1, Math.max(0, fade));
+      slab.visible = slab.material.opacity > 0;
+    }
     camera.position.set(
       center.x + distance * Math.cos(angle),
       center.y + distance * Math.sin(angle),

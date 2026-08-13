@@ -8,6 +8,13 @@ joints sweep their limits, solved through the SDK so closed loops stay shut.
     uv run python scripts/readme_reel.py runs/<run-id>:"a toolbox" runs/<other>
 
 The label after the colon is optional; the run directory name is the default.
+
+With --physics the motion is simulated rather than solved: each object hangs
+with gravity off and works its joints, then gravity comes on and it drops onto
+a ramp and slides away. That path reads everything it needs out of the exported
+file, so it takes bare USDZ paths as well as run directories.
+
+    uv run python scripts/readme_reel.py a.usdz b.usdz --physics --rows 2
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from PIL import Image, ImageChops
 
 from articraft.sdk import JointAxis
 from articraft.sdk.assembly import _frame_matrix
-from articraft.viewer import load_viewer_run
+from articraft.viewer import _read_version, load_viewer_run
 
 BACKGROUND = "#f7f8fa"
 PAGE = Path(__file__).with_name("reel.html")
@@ -92,8 +99,10 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
         near, far = to_root(closer.body0), to_root(closer.body1)
         far_names = {joint.name for joint in far}
         near_names = {joint.name for joint in near}
-        rings.append([j for j in near if j.name not in far_names]
-                     + [j for j in far if j.name not in near_names])
+        rings.append(
+            [j for j in near if j.name not in far_names]
+            + [j for j in far if j.name not in near_names]
+        )
 
     # Rings that share a joint are one mechanism -- a gripper's two dogbones
     # both hang off the same slider -- so they get one driver between them.
@@ -167,9 +176,7 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
         world = _frame_matrix(joint.frame0)[:3, :3] @ direction
         return abs(float(world[2])) > 0.99
 
-    candidates = [
-        joint for joint in tree if len(joint.dofs) == 1 and joint.name not in followers
-    ]
+    candidates = [joint for joint in tree if len(joint.dofs) == 1 and joint.name not in followers]
     # Dropping the turntable only helps while something else still moves. A tool
     # that lies flat -- a pair of pliers -- has its one hinge on that axis too,
     # and skipping it would leave the panel standing still.
@@ -183,9 +190,7 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
                 asked[joint.dof_id(dof)] = turn
                 continue
             lower, upper = dof.limits
-            asked[joint.dof_id(dof)] = max(
-                lower, min(upper, reach_of(dof) * blend * scale)
-            )
+            asked[joint.dof_id(dof)] = max(lower, min(upper, reach_of(dof) * blend * scale))
         return asked
 
     def blends(count: int) -> list[tuple[float, float]]:
@@ -227,6 +232,191 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
             }
         )
     return placements
+
+
+def _physics_poses(
+    usdz: Path,
+    frames: int,
+    *,
+    fps: float,
+    ramp: float,
+    hover: float,
+    settle: float,
+    speed: float,
+    roll: float,
+    runway: float,
+) -> tuple[list[dict[str, list[float]]], dict[str, list[float]]]:
+    """Body placements per frame, recorded from MuJoCo, and the ramp they use.
+
+    The shot has two acts. While ``settle`` of the frames remain, gravity is off
+    and the joints are driven straight through their travel, so the object hangs
+    in place and works its mechanism. Then gravity comes on and nothing is driven
+    any more: it drops onto a ramp and slides off under its own weight.
+
+    The ramp is a real slab rather than the usual infinite plane, so there is an
+    edge to leave and the page has something to draw. It is sized off the model's
+    own extent, because these run from a 0.2 m hand to a 5 m landing gear leg and
+    one fixed slab would be a runway under one and a kerb under the other.
+
+    Body names come from the same authored names the page keys its parts by, so
+    the payload is interchangeable with the kinematic one.
+    """
+
+    import mujoco
+    import numpy as np
+
+    from articraft.simulate import _build_spec
+
+    spec = _build_spec(usdz)
+    tilt = math.radians(ramp)
+    # Compile once just to measure the object, then shape the slab to it. The
+    # measurement has to skip the floor: it is still an infinite plane at this
+    # point, and its extent would swamp anything standing on it.
+    sizing = spec.compile()
+    probe = mujoco.MjData(sizing)
+    mujoco.mj_forward(sizing, probe)
+    on_body = [g for g in range(sizing.ngeom) if sizing.geom_bodyid[g] > 0]
+    low = np.min([probe.geom_xpos[g] - sizing.geom_rbound[g] for g in on_body], axis=0)
+    high = np.max([probe.geom_xpos[g] + sizing.geom_rbound[g] for g in on_body], axis=0)
+    extent = float(np.linalg.norm(high - low))
+    reach = extent * 0.62
+    half = [reach * runway, extent * 0.44, extent * 0.02]
+    # Sink the slab along its own normal so the face the object lands on, rather
+    # than the middle of the slab, is the plane through the origin it was posed on.
+    normal = (math.sin(tilt), 0.0, math.cos(tilt))
+    # Spend the extra length downhill, so an object that travels starts at the
+    # top of its runway rather than in the middle of it. Centring the slab would
+    # give a sliding object half the ramp and the reel half the journey.
+    downhill = (math.cos(tilt), 0.0, -math.sin(tilt))
+    shift = reach * (runway - 1.0)
+    for geom in spec.worldbody.geoms:
+        if geom.name == "floor":
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.size = half
+            geom.quat = [math.cos(tilt / 2), 0.0, math.sin(tilt / 2), 0.0]
+            geom.pos = [
+                -half[2] * normal[0] + shift * downhill[0],
+                0.0,
+                -half[2] * normal[2] + shift * downhill[2],
+            ]
+            ramp_payload = {"size": list(half), "pos": list(geom.pos), "tilt": [ramp]}
+
+    # Drive the joints through servos rather than by writing qpos. A loop
+    # closure is a constraint the solver enforces while stepping, and writing
+    # positions outright walks straight through it: that is what pulls a landing
+    # gear's actuator rod off the strut it is pinned to while the object floats.
+    for joint in spec.joints:
+        if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        servo = spec.add_actuator()
+        servo.name = f"drive_{joint.name}"
+        servo.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        servo.target = joint.name
+        servo.gaintype = mujoco.mjtGain.mjGAIN_FIXED
+        servo.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+
+    model = spec.compile()
+    data = mujoco.MjData(model)
+
+    # Tune each servo against the inertia it actually swings, not the mass of
+    # the whole object. Scaling by total mass gives a 1 t landing gear a gain in
+    # the hundreds of thousands, which rings at this timestep, blows the loop
+    # closures open -- the piston leaving the strut -- and pumps in enough energy
+    # that the object bounces higher than it was dropped from.
+    # Critically damped at ``BAND`` Hz: kp = m*w^2, kv = 2*m*w.
+    band = 3.0 * 2.0 * math.pi
+    for actuator in range(model.nu):
+        dof = model.jnt_dofadr[model.actuator_trnid[actuator, 0]]
+        inertia = max(float(model.dof_M0[dof]), 1e-6)
+        model.actuator_gainprm[actuator, 0] = inertia * band * band
+        model.actuator_biasprm[actuator, 1] = -inertia * band * band
+        model.actuator_biasprm[actuator, 2] = -2.0 * inertia * band
+
+    free = [j for j in range(model.njnt) if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
+    driven = [
+        j
+        for j in range(model.njnt)
+        if model.jnt_type[j] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE)
+    ]
+    rest = data.qpos.copy()
+    # Hold it clear of the ramp, measured along the ramp normal so the drop is
+    # the same height whatever the incline.
+    for joint in free:
+        adr = model.jnt_qposadr[joint]
+        rest[adr] += hover * math.sin(tilt)
+        rest[adr + 2] += hover * math.cos(tilt)
+        if roll:
+            # Spin it about the downhill axis before letting go. A shape that
+            # settles on a curved face -- an engine cowl -- picks its resting
+            # roll from the one it started at, and that decides whether the
+            # open end finishes pointing at the sky or at the ramp.
+            turn = math.radians(roll)
+            spun = np.zeros(4)
+            mujoco.mju_mulQuat(
+                spun,
+                np.array([math.cos(turn / 2), math.sin(turn / 2), 0.0, 0.0]),
+                rest[adr + 3 : adr + 7],
+            )
+            rest[adr + 3 : adr + 7] = spun
+
+    names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in range(1, model.nbody)]
+
+    def record() -> dict[str, list[float]]:
+        placement = {}
+        for index, name in enumerate(names, start=1):
+            matrix = np.eye(4)
+            matrix[:3, :3] = data.xmat[index].reshape(3, 3)
+            matrix[:3, 3] = data.xpos[index]
+            placement[name] = [float(v) for v in matrix.T.flatten()]
+        return placement
+
+    floating = max(1, int(frames * settle))
+    placements: list[dict[str, list[float]]] = []
+    commanded = {int(model.actuator_trnid[a, 0]): a for a in range(model.nu)}
+    # ``speed`` is how much simulated time each frame covers. Above 1.0 the whole
+    # shot plays quicker without dropping frames out of the motion.
+    steps = max(1, round(speed / (fps * model.opt.timestep)))
+
+    gravity = model.opt.gravity.copy()
+    model.opt.gravity[:] = 0.0
+    data.qpos[:] = rest
+    mujoco.mj_forward(model, data)
+    for frame in range(floating):
+        blend = 0.5 * (1.0 - math.cos(2.0 * math.pi * frame / floating))
+        for joint in driven:
+            actuator = commanded.get(joint)
+            if actuator is None:
+                continue
+            low, high = model.jnt_range[joint]
+            if model.jnt_limited[joint] and math.isfinite(low) and math.isfinite(high):
+                data.ctrl[actuator] = low + (high - low) * blend
+            elif model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_HINGE:
+                # A free spinner: let it turn a full revolution instead. Sliders
+                # with no stops have no travel to show, so they stay at rest.
+                data.ctrl[actuator] = 2.0 * math.pi * frame / floating
+        for _ in range(steps):
+            mujoco.mj_step(model, data)
+            # Hold the object where it was placed while its mechanism works. A
+            # weld would be the tidier way to say this, but it holds the pose the
+            # model compiled with, which throws away the hover and the roll.
+            for joint in free:
+                position, velocity = model.jnt_qposadr[joint], model.jnt_dofadr[joint]
+                data.qpos[position : position + 7] = rest[position : position + 7]
+                data.qvel[velocity : velocity + 6] = 0.0
+        placements.append(record())
+
+    # Let go: the servos go slack and gravity comes back.
+    model.actuator_gainprm[:, 0] = 0.0
+    model.actuator_biasprm[:, 1] = 0.0
+    model.actuator_biasprm[:, 2] = 0.0
+    data.ctrl[:] = 0.0
+    data.qvel[:] = 0.0  # drop whatever the servos were still carrying
+    model.opt.gravity[:] = gravity
+    for _ in range(frames - floating):
+        for _ in range(steps):
+            mujoco.mj_step(model, data)
+        placements.append(record())
+    return placements, ramp_payload
 
 
 def _handler(bootstrap: bytes, models: dict[str, Path], captured: dict[tuple[int, int], bytes]):
@@ -348,19 +538,76 @@ def main(
     rows: Annotated[int, typer.Option(help="Grid rows to split the panels into.")] = 1,
     supersample: Annotated[int, typer.Option(help="Render scale before downsampling.")] = 3,
     timeout: Annotated[float, typer.Option(help="Seconds to wait for the browser.")] = 600.0,
+    physics: Annotated[
+        bool, typer.Option(help="Simulate instead of solving: float, then drop and slide.")
+    ] = False,
+    ramp: Annotated[
+        str, typer.Option(help="Ramp angle in degrees; one value, or one per panel.")
+    ] = "16",
+    hover: Annotated[float, typer.Option(help="Metres above the ramp to hang, then fall.")] = 0.6,
+    settle: Annotated[
+        float, typer.Option(help="Fraction of the shot spent floating before gravity.")
+    ] = 0.5,
+    speed: Annotated[
+        float, typer.Option(help="Simulated seconds per frame, relative to real time.")
+    ] = 1.0,
+    phase: Annotated[
+        str, typer.Option(help="Per-panel camera start angles in degrees, comma separated.")
+    ] = "",
+    roll: Annotated[
+        str, typer.Option(help="Per-panel spin about the downhill axis, degrees, comma separated.")
+    ] = "",
+    runway: Annotated[
+        str, typer.Option(help="Per-panel ramp length, as a multiple of the default.")
+    ] = "",
 ) -> None:
-    """Render one side-by-side rotating loop from the given runs."""
+    """Render one side-by-side loop from the given runs or exported USDZ files."""
     panels, models = [], {}
+    rolls = [float(value) for value in roll.split(",") if value.strip()]
+    # One angle serves every panel, or give each its own: what an object does
+    # on a slope is decided by the friction its own materials author, so a
+    # single incline either pins the grippy ones or throws the slick ones off.
+    ramps = [float(value) for value in str(ramp).split(",") if value.strip()] or [16.0]
+    runways = [float(value) for value in runway.split(",") if value.strip()]
     for index, entry in enumerate(runs):
         run, _, _ = entry.partition(":")
-        version = load_viewer_run(Path(run)).versions[0]
         identifier = f"panel{index}"
-        models[identifier] = load_viewer_run(Path(run)).files[str(version["id"])]
+        if run.endswith(".usdz"):
+            # An exported file carries its own parts and appearances, so a bare
+            # USDZ is enough to render: no run directory, no main.py to import.
+            path = Path(run)
+            version = _read_version(path)
+            models[identifier] = path
+        else:
+            version = load_viewer_run(Path(run)).versions[0]
+            models[identifier] = load_viewer_run(Path(run)).files[str(version["id"])]
+        slab = None
+        if physics:
+            placements, slab = _physics_poses(
+                models[identifier],
+                frames,
+                fps=fps,
+                ramp=ramps[index] if index < len(ramps) else ramps[-1],
+                hover=hover,
+                settle=settle,
+                speed=speed,
+                roll=rolls[index] if index < len(rolls) else 0.0,
+                runway=runways[index] if index < len(runways) else 1.0,
+            )
+        elif run.endswith(".usdz"):
+            raise typer.BadParameter("a bare USDZ can only be posed with --physics")
+        else:
+            placements = _poses(Path(run), version, frames)
+        # A panel can open on a chosen side. An engine seen side on is a tube;
+        # turned to face its intake, the first thing shown is the fan spinning.
+        starts = [float(value) for value in phase.split(",") if value.strip()]
         panels.append(
             {
                 "id": identifier,
                 "model": version["model"],
-                "poses": _poses(Path(run), version, frames),
+                "poses": placements,
+                "ramp": slab,
+                "phase": starts[index] if index < len(starts) else 0.0,
             }
         )
 
@@ -373,6 +620,7 @@ def main(
             "zoom": zoom,
             "supersample": supersample,
             "background": BACKGROUND,
+            "fit": max(1, int(frames * settle)) if physics else frames,
         }
     ).encode()
     captured: dict[tuple[int, int], bytes] = {}
