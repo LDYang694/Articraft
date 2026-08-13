@@ -151,6 +151,62 @@ def test_complete_pose_state_validates_past_a_quarter_turn() -> None:
     assert checked.dof_positions["crank_pin.rotY"] == pytest.approx(1.7)
 
 
+def _parallelogram(limits: tuple[float, float]) -> RigidBodyAssembly:
+    """Equal crank and rocker on matching pins: closes at every crank angle."""
+
+    assembly = RigidBodyAssembly("parallelogram")
+    ground = assembly.rigid_body("ground")
+    crank = assembly.rigid_body("crank")
+    coupler = assembly.rigid_body("coupler")
+    rocker = assembly.rigid_body("rocker")
+    for body, length in ((ground, 0.35), (crank, 0.1), (coupler, 0.3), (rocker, 0.1)):
+        body.add(Box(max(length, 0.05), 0.04, 0.04), name="bar")
+    hinge = (JointDOF(JointAxis.ROT_Y, limits=limits),)
+    crank_pin = assembly.joint(
+        "crank_pin",
+        ground.at(JointFrame(xyz=(-0.15, 0.0, 0.0))),
+        crank.at(JointFrame(xyz=(0.0, 0.0, -0.05))),
+        dofs=hinge,
+    )
+    coupler_pin = assembly.joint(
+        "coupler_pin",
+        crank.at(JointFrame(xyz=(0.0, 0.0, 0.05))),
+        coupler.at(JointFrame(xyz=(-0.15, 0.0, 0.0))),
+        dofs=hinge,
+    )
+    rocker_pin = assembly.joint(
+        "rocker_pin",
+        coupler.at(JointFrame(xyz=(0.15, 0.0, 0.0))),
+        rocker.at(JointFrame(xyz=(0.0, 0.0, 0.05))),
+        dofs=hinge,
+    )
+    assembly.joint(
+        "closing_pin",
+        ground.at(JointFrame(xyz=(0.15, 0.0, 0.0))),
+        rocker.at(JointFrame(xyz=(0.0, 0.0, -0.05))),
+        dofs=hinge,
+    )
+    assembly.articulation("main", root=ground, joints=(crank_pin, coupler_pin, rocker_pin))
+    return assembly
+
+
+def test_limits_wider_than_a_turn_wrap_by_the_turn_not_the_span() -> None:
+    """A hinge limited to -3.15..3.15 is periodic, but its period is 2*pi.
+
+    Wrapping a solved coordinate by the limit span (6.3) lands on a genuinely
+    different angle -- 0.017 rad away -- and the corrupted iterate strands the
+    continuation. This parallelogram closes at every crank angle; with the
+    span wrap it failed past a crank angle of about 2.6.
+    """
+
+    resolved = _parallelogram(limits=(-3.15, 3.15)).resolve()
+
+    for value in np.linspace(-math.pi, math.pi, 41):
+        state = resolved.forward_kinematics({"crank_pin.rotY": float(value)})
+        for dof_id, solved in state.dof_positions.items():
+            assert -3.15 - 1e-9 <= solved <= 3.15 + 1e-9, (dof_id, solved)
+
+
 def _hydraulic_ram(slide_limits: tuple[float, float]) -> RigidBodyAssembly:
     assembly = RigidBodyAssembly("hydraulic_linkage")
     ground = assembly.rigid_body("ground")

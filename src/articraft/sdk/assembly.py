@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TypeAlias, cast
 
 import numpy as np
+from scipy.optimize import least_squares  # pyright: ignore[reportMissingTypeStubs]
 from scipy.spatial.transform import Rotation  # pyright: ignore[reportMissingTypeStubs]
 
 from articraft.sdk._values import _as_identifier, _as_name, _finite, _positive
@@ -796,8 +797,8 @@ def _propagate_transforms(
 
 _LOOP_STEPS = 5
 # The acceptance gate, equal to validate_state's per-axis tolerance so a
-# solve is accepted exactly when validation would pass it. The Newton loop
-# itself polishes two decades further so accepted solves clear the gate
+# solve is accepted exactly when validation would pass it. The least-squares
+# solve itself polishes well past this so accepted solves clear the gate
 # with margin rather than landing on it.
 _LOOP_TOLERANCE = 1e-6
 
@@ -878,45 +879,46 @@ def _solve_closed_loops(
             rows.extend(joint_values[axis] for axis in locked[closure])
         return np.asarray(rows, dtype=np.float64)
 
+    # Limits become solver bounds, except on a full-circle hinge: its
+    # coordinate is periodic, so it solves unbounded and wraps afterwards
+    # rather than stopping at a seam that is not a physical wall.
+    lower_bounds = np.asarray(
+        [
+            -np.inf if bound is None or wraps else bound[0]
+            for bound, wraps in zip(limits, periodic, strict=True)
+        ],
+        dtype=np.float64,
+    )
+    upper_bounds = np.asarray(
+        [
+            np.inf if bound is None or wraps else bound[1]
+            for bound, wraps in zip(limits, periodic, strict=True)
+        ],
+        dtype=np.float64,
+    )
+
+    def solve_toward(scale: float, start: np.ndarray) -> np.ndarray:
+        # A bounded trust-region solve keeps every iterate inside the limits
+        # and differentiates into the feasible interval at a bound -- the
+        # properties the hand-rolled Gauss-Newton loop had to be taught.
+        solution = least_squares(
+            lambda unknowns: residual(scale, unknowns),
+            start,
+            jac="2-point",
+            bounds=(lower_bounds, upper_bounds),
+            method="dogbox",
+            ftol=1e-14,
+            xtol=1e-14,
+            gtol=1e-14,
+        )
+        return project(solution.x)
+
     values = np.zeros(len(candidates), dtype=np.float64)
     # With no unknowns left -- every ring coordinate supplied by the caller --
-    # there is nothing to iterate, but the closure residual still decides
+    # there is nothing to solve, but the closure residual still decides
     # whether the supplied pose keeps the loop assembled.
-    steps = _LOOP_STEPS if candidates else 0
-    for step in range(1, steps + 1):
-        scale = step / _LOOP_STEPS
-        damping = 1e-6
-        for _ in range(40):
-            current = residual(scale, values)
-            error = float(np.linalg.norm(current))
-            if error < _LOOP_TOLERANCE * 1e-2:
-                break
-            jacobian = np.empty((len(current), len(values)), dtype=np.float64)
-            for index in range(len(values)):
-                # Differentiate into the feasible interval: a nudge past a
-                # limit would sample the pose the solver may not return.
-                bound = limits[index]
-                nudge = 1e-6
-                if bound is not None and not periodic[index] and values[index] + nudge > bound[1]:
-                    nudge = -1e-6
-                nudged = values.copy()
-                nudged[index] += nudge
-                jacobian[:, index] = (residual(scale, nudged) - current) / nudge
-            normal = jacobian.T @ jacobian + damping * np.eye(len(values))
-            try:
-                delta = np.linalg.solve(normal, -jacobian.T @ current)
-            except np.linalg.LinAlgError:
-                break
-            # Project the iterate itself, not just its evaluation: an iterate
-            # parked beyond a limit sees a flat residual and never comes back.
-            trial = project(values + delta)
-            if float(np.linalg.norm(residual(scale, trial))) < error:
-                values = trial
-                damping = max(damping * 0.5, 1e-9)
-            else:
-                damping *= 8.0
-                if damping > 1e6:
-                    break
+    for step in range(1, (_LOOP_STEPS if candidates else 0) + 1):
+        values = solve_toward(step / _LOOP_STEPS, values)
 
     # One gate, equal to validate_state's per-axis tolerance: anything
     # accepted here passes validation, anything rejected names the loop.
@@ -989,14 +991,16 @@ def _project_value(value: float, limits: tuple[float, float] | None, periodic: b
 
     A full-circle hinge has no wall at +-pi: the coordinate is periodic, and
     clamping it would strand a solution that continues on the other side of
-    the seam.
+    the seam. The period is the physical turn, 2*pi -- limits merely wide
+    enough to contain one (say -3.15..3.15) span slightly more, and wrapping
+    by that span would land on a genuinely different angle.
     """
 
     if limits is None or not periodic:
         return _clamp(value, limits)
-    span = limits[1] - limits[0]
-    wrapped = limits[0] + math.fmod(value - limits[0], span)
-    return wrapped + span if wrapped < limits[0] else wrapped
+    turn = 2.0 * math.pi
+    wrapped = limits[0] + math.fmod(value - limits[0], turn)
+    return wrapped + turn if wrapped < limits[0] else wrapped
 
 
 def _values_from(joint: Joint, positions: Mapping[str, float]) -> dict[JointAxis, float]:
