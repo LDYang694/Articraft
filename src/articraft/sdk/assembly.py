@@ -897,19 +897,13 @@ def _solve_closed_loops(
         dtype=np.float64,
     )
 
-    values = np.zeros(len(candidates), dtype=np.float64)
-    # With no unknowns left -- every ring coordinate supplied by the caller --
-    # there is nothing to solve, but the closure residual still decides
-    # whether the supplied pose keeps the loop assembled.
-    for step in range(1, (_LOOP_STEPS if candidates else 0) + 1):
-        scale = step / _LOOP_STEPS
-        # A trust-region solve survives the singular Jacobians of an
-        # over-center linkage, keeps every iterate inside the bounds, and
-        # differentiates into the feasible interval at a limit -- the three
-        # properties a plain Gauss-Newton loop had to be taught by hand.
+    def solve_toward(scale: float, start: np.ndarray) -> np.ndarray:
+        # A bounded trust-region solve keeps every iterate inside the limits
+        # and differentiates into the feasible interval at a bound -- the
+        # properties the hand-rolled Gauss-Newton loop had to be taught.
         solution = least_squares(
-            lambda unknowns, scale=scale: residual(scale, unknowns),
-            values,
+            lambda unknowns: residual(scale, unknowns),
+            start,
             jac="2-point",
             bounds=(lower_bounds, upper_bounds),
             method="dogbox",
@@ -917,7 +911,14 @@ def _solve_closed_loops(
             xtol=1e-14,
             gtol=1e-14,
         )
-        values = project(solution.x)
+        return project(solution.x)
+
+    values = np.zeros(len(candidates), dtype=np.float64)
+    # With no unknowns left -- every ring coordinate supplied by the caller --
+    # there is nothing to solve, but the closure residual still decides
+    # whether the supplied pose keeps the loop assembled.
+    for step in range(1, (_LOOP_STEPS if candidates else 0) + 1):
+        values = solve_toward(step / _LOOP_STEPS, values)
 
     # One gate, equal to validate_state's per-axis tolerance: anything
     # accepted here passes validation, anything rejected names the loop.
@@ -990,14 +991,16 @@ def _project_value(value: float, limits: tuple[float, float] | None, periodic: b
 
     A full-circle hinge has no wall at +-pi: the coordinate is periodic, and
     clamping it would strand a solution that continues on the other side of
-    the seam.
+    the seam. The period is the physical turn, 2*pi -- limits merely wide
+    enough to contain one (say -3.15..3.15) span slightly more, and wrapping
+    by that span would land on a genuinely different angle.
     """
 
     if limits is None or not periodic:
         return _clamp(value, limits)
-    span = limits[1] - limits[0]
-    wrapped = limits[0] + math.fmod(value - limits[0], span)
-    return wrapped + span if wrapped < limits[0] else wrapped
+    turn = 2.0 * math.pi
+    wrapped = limits[0] + math.fmod(value - limits[0], turn)
+    return wrapped + turn if wrapped < limits[0] else wrapped
 
 
 def _values_from(joint: Joint, positions: Mapping[str, float]) -> dict[JointAxis, float]:
