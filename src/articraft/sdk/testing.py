@@ -1686,17 +1686,9 @@ def _geometry_selector(part: RigidBodyRef | None, shape: str | None) -> str:
 
 
 def _signed_mesh_volume(mesh: trimesh.Trimesh) -> float:
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    faces = np.asarray(mesh.faces, dtype=np.int64)
-    triangles = vertices[faces]
-    return float(
-        np.einsum(
-            "ij,ij->i",
-            triangles[:, 0],
-            np.cross(triangles[:, 1], triangles[:, 2]),
-        ).sum()
-        / 6.0
-    )
+    # trimesh's surface integral keeps the winding sign, which is the signal
+    # the orientation checks read.
+    return float(mesh.volume)
 
 
 def _pose_dicts(
@@ -1736,11 +1728,9 @@ def _articulation_sweep_values(
         return [0.0]
     if high <= low:
         return [low]
-    # Clamp against float overshoot: the last step can land a hair past the
-    # upper limit and a strict limit check would reject the joint's own range.
-    return [
-        min(max(low + (high - low) * index / (samples - 1), low), high) for index in range(samples)
-    ]
+    # linspace hits both limits exactly, so the strict limit check never sees
+    # a last step that lands a hair past the joint's own range.
+    return [float(value) for value in np.linspace(low, high, samples)]
 
 
 def _articulation_name(value: object) -> str:
