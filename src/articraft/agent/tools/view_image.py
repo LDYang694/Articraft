@@ -58,4 +58,5 @@ TOOL = Tool(
         ["path"],
     ),
     run,
+    supports_parallel=True,
 )

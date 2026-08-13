@@ -1130,6 +1130,68 @@ def test_agent_runs_parallel_safe_tools_concurrently(monkeypatch, tmp_path) -> N
     assert [event["call_id"] for event in outputs[:2]] == ["call_1", "call_2"]
 
 
+def test_agent_batches_parallel_image_inspection(monkeypatch, tmp_path) -> None:
+    active = 0
+    max_active = 0
+
+    async def run_view_image(context, args):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return ToolResult(
+            {"path": args["path"]},
+            [
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{args['path']}",
+                    "detail": "high",
+                }
+            ],
+        )
+
+    def inspect_images(query: ModelQuery) -> Response:
+        outputs = [
+            message for message in query.messages if message.get("type") == "function_call_output"
+        ]
+        assert [output["call_id"] for output in outputs] == ["call_1", "call_2"]
+        assert [output["output"][1]["image_url"] for output in outputs] == [
+            "data:image/png;base64,a.png",
+            "data:image/png;base64,b.png",
+        ]
+        return calls(tool_call("compile", {}, call_id="call_3"))
+
+    monkeypatch.setattr(
+        agent_tools,
+        "TOOLS",
+        {
+            "view_image": Tool(
+                "view_image",
+                stub_schema("view_image"),
+                run_view_image,
+                supports_parallel=True,
+            ),
+            "compile": compile_success_tool(),
+        },
+    )
+    model = ScriptedModel(
+        [
+            calls(
+                tool_call("view_image", {"path": "a.png"}, call_id="call_1"),
+                tool_call("view_image", {"path": "b.png"}, call_id="call_2"),
+            ),
+            inspect_images,
+            text("done"),
+        ]
+    )
+
+    result = run(Agent(model, LocalWorkspace(output_dir=tmp_path), max_turns=3).run("a box"))
+
+    assert result["status"] == "success"
+    assert max_active == 2
+
+
 def test_agent_serializes_non_parallel_tools(monkeypatch, tmp_path) -> None:
     active = 0
     max_active = 0
@@ -1175,7 +1237,7 @@ def test_sdk_quickstart_user_message_is_preloaded() -> None:
     assert content.startswith("<sdk_quickstart>")
     assert "This SDK quickstart is preloaded for the run." in content
     assert "plausible build123d and mesh approaches" in content
-    assert "parallel reads" in content
+    assert "parallel reads and image views" in content
     assert "Do not stop at the first workable API" in content
     assert "# SDK quickstart" in content
     assert "`docs/sdk/common/40_testing.md`" in content
