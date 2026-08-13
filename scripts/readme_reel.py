@@ -96,15 +96,19 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
 
     # Rings that share a joint are one mechanism -- a gripper's two dogbones
     # both hang off the same slider -- so they get one driver between them.
+    # Merging has to be transitive: an excavator's bucket ring and its stick
+    # ring both touch the stick hinge, and left as separate groups they pick
+    # two drivers that fight over it, which shrinks the whole loop to whatever
+    # amplitude that conflict still allows.
     merged: list[list] = []
     for ring in rings:
         names = {j.name for j in ring}
-        for group in merged:
-            if names & {j.name for j in group}:
-                group.extend(j for j in ring if j.name not in {g.name for g in group})
-                break
-        else:
-            merged.append(list(ring))
+        touching = [g for g in merged if names & {j.name for j in g}]
+        combined = list(ring)
+        for group in touching:
+            combined.extend(j for j in group if j.name not in {c.name for c in combined})
+            merged.remove(group)
+        merged.append(combined)
 
     def reach_of(dof) -> float:
         """How far this joint travels from rest, out toward its further stop.
@@ -151,26 +155,49 @@ def _poses(run: Path, version: dict, frames: int) -> list[dict[str, list[float]]
         if len(joint.dofs) == 1 and joint.name not in followers
     ]
 
-    placements: list[dict[str, list[float]]] = []
-    for index in range(frames):
-        # Ease in and out, and stay well inside the stops. A joint driven to
-        # its extremes reads as broken rather than articulated: an excavator
-        # bucket curls back over its own stick, a guard rail sits half folded.
-        blend = 0.5 - 0.5 * math.cos(2.0 * math.pi * index / frames)
-        turn = 2.0 * math.pi * index / frames
+    def wanted(blend: float, turn: float, scale: float) -> dict[str, float]:
         asked: dict[str, float] = {}
         for joint, dof in driven:
             if dof.limits is None:
-                # A fan blade or a wheel has no stops; give it a full turn.
                 asked[joint.dof_id(dof)] = turn
                 continue
             lower, upper = dof.limits
-            asked[joint.dof_id(dof)] = max(lower, min(upper, reach_of(dof) * blend))
+            asked[joint.dof_id(dof)] = max(
+                lower, min(upper, reach_of(dof) * blend * scale)
+            )
+        return asked
+
+    def blends(count: int) -> list[tuple[float, float]]:
+        # Ease in and out so the loop has no visible seam.
+        return [
+            (
+                0.5 - 0.5 * math.cos(2.0 * math.pi * index / count),
+                2.0 * math.pi * index / count,
+            )
+            for index in range(count)
+        ]
+
+    # One amplitude for the whole loop, the largest every frame can hold. A
+    # linkage that cannot reach the deepest part of a sweep used to be caught
+    # per frame and backed off there, which put a jump in the middle of the
+    # motion; scaling the loop instead keeps it smooth and merely shallower.
+    scale = 1.0
+    for candidate in (1.0, 0.8, 0.65, 0.5, 0.35, 0.2, 0.1):
         try:
-            state = resolved.forward_kinematics(asked)
+            for blend, turn in blends(frames):
+                resolved.forward_kinematics(wanted(blend, turn, candidate))
         except Exception:
-            # A pose the linkage cannot reach: hold the rest pose rather than
-            # dropping the frame, so the reel keeps a steady cadence.
+            continue
+        scale = candidate
+        break
+    else:
+        scale = 0.0
+
+    placements: list[dict[str, list[float]]] = []
+    for blend, turn in blends(frames):
+        try:
+            state = resolved.forward_kinematics(wanted(blend, turn, scale))
+        except Exception:
             state = resolved.forward_kinematics({})
         placements.append(
             {

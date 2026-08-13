@@ -172,7 +172,7 @@ Use the viewer to examine each generated version and move its joints.
 ## Simulate a run
 
 Export validation says the USD is well formed. Simulation says whether the object
-stands up. Drop a run on a floor and see what happens:
+stands up. It is released 20 mm above a floor and given three seconds to settle:
 
 ```shell
 uv sync --group sim
@@ -189,33 +189,32 @@ uv run articraft simulate runs/<run-id>
   verdict: stands up
 ```
 
-Tilt the floor until it slides, which measures the friction its materials
-declared instead of taking it on faith:
+Every line is measured from the run rather than asserted by it:
+
+| line | what it tells you |
+| --- | --- |
+| **lowest body** | where the lowest body origin started and finished. An origin sits wherever its author put it, so falling through the floor is decided by contact, not by height |
+| **contacts at rest** | contact points left at the end. Zero means it never landed, or landed and passed through |
+| **deepest penetration** | how far anything sank into anything. Contacts are springs, so millimetres on impact are normal; millimetres still there at rest are not |
+| **separation change** | how far the furthest pair of bodies drifted apart. A joint that comes undone shows up here |
+| **residual velocity** | the fastest thing still moving. Zero is settled; a large number means it never stopped |
+
+Two other scenarios ask different questions:
 
 ```shell
 uv run articraft simulate runs/<run-id> --scenario tilt --seconds 8
-```
-
-```
-  slipped at: 42.3 deg of tilt
-  friction: measured 0.91, authored 0.85
-```
-
-Let the joints fall from mid-travel, which is the motion an articulated object is
-actually for:
-
-```shell
 uv run articraft simulate runs/<run-id> --scenario release
 ```
 
-```
-  joints released from mid-travel
-  peak joint speed: 6.20 per second
-```
+`tilt` raises the floor until the object slides, which measures the friction its
+materials declared instead of taking it on faith — `slipped at 42.3 deg,
+friction measured 0.91 against 0.85 authored`. `release` drops every joint from
+mid travel, which is the motion an articulated object is actually for, and
+reports the `peak joint speed` that results.
 
-Every run records its motion, so `articraft view` gains a **Play
-simulation** switch that replays it in the same viewer used to pose joints.
-MuJoCo is optional, so the `sim` group is not installed by default.
+Every run records its motion, so `articraft view` gains a **Play simulation**
+switch that replays it in the same viewer used to pose joints. MuJoCo is
+optional, so the `sim` group is not installed by default.
 
 A passing run covers geometry, mass, joints, and sliding friction. It does not
 cover restitution: MuJoCo has no such parameter, and static friction has nowhere
