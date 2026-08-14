@@ -111,6 +111,10 @@ for the other test lanes.
 - [Release guide](docs/releasing.md)
 - [Repository guide](AGENTS.md)
 
-Articraft uses the [Apache 2.0 License](LICENSE). It is the supported successor to the
+---
+
+Articraft uses the [Apache 2.0 License](LICENSE). 
+
+It is the supported successor to the
 [original Articraft harness](https://github.com/mattzh72/articraft) and its
 [research paper](https://arxiv.org/abs/2605.15187).
