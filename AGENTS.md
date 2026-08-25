@@ -58,6 +58,10 @@ The CLI entry point is:
 uv run articraft
 ```
 
+`articraft edit "<change>" <run>` runs the same loop against a finished run's
+code: it seeds a new run from that run's workspace and uses `prompts/edit.md`
+instead of `prompts/task.md`.
+
 The compile worker entry point is:
 
 ```bash

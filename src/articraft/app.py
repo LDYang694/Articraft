@@ -17,7 +17,7 @@ from articraft.tui import print_settings_error, replay_run, run_live
 from articraft.viewer import load_viewer_run, serve_viewer
 
 cli = typer.Typer(help="Generate articulated objects with articraft.", add_completion=False)
-COMMANDS = {"generate", "replay", "view", "simulate", "texture"}
+COMMANDS = {"generate", "edit", "replay", "view", "simulate", "texture"}
 
 
 @cli.command()
@@ -44,7 +44,7 @@ def generate(
     effort: str | None = typer.Option(
         None,
         "--effort",
-        help="OpenAI reasoning effort.",
+        help="OpenAI reasoning effort (default: xhigh).",
     ),
     compile_timeout: float | None = typer.Option(
         None,
@@ -83,6 +83,94 @@ def generate(
             prompt,
             image,
             use_tui=use_tui,
+        )
+        if textures:
+            _apply_textures(result)
+        if not use_tui:
+            _print_result(result)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@cli.command()
+def edit(
+    prompt: str,
+    run: str = typer.Argument(
+        ..., help="Run id under the output directory, or a path to a run directory."
+    ),
+    image: Path | None = typer.Option(
+        None,
+        "--image",
+        exists=False,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Local reference image for the change.",
+    ),
+    provider: Literal["openai", "gemini", "anthropic", "openrouter"] | None = typer.Option(
+        None,
+        "--provider",
+        case_sensitive=False,
+        help="Model provider to use: openai, gemini, anthropic, or openrouter.",
+    ),
+    model: str | None = typer.Option(None, "-m", "--model", help="Model to use."),
+    output_dir: Path | None = typer.Option(None, "--output-dir", help="Run output directory."),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help="OpenAI reasoning effort (default: xhigh).",
+    ),
+    compile_timeout: float | None = typer.Option(
+        None,
+        "--compile-timeout",
+        min=1.0,
+        help="Maximum compile time in seconds.",
+    ),
+    tui: bool | None = typer.Option(
+        None,
+        "--tui/--no-tui",
+        help="Show the live run UI (default: on when attached to a terminal).",
+    ),
+    textures: bool = typer.Option(
+        False,
+        "--textures",
+        help="Apply texture maps to the edited result.",
+    ),
+    physics: bool = typer.Option(
+        False,
+        "--physics",
+        help="Require every part to declare mass properties, and export them.",
+    ),
+) -> None:
+    """Change a finished run's object, in a new run.
+
+    The new run starts from the finished run's code, so the agent edits a
+    working object instead of building one from the stub. It goes through the
+    same compile and check loop as generation, and the source run is left as it
+    was.
+    """
+    if image is not None and not image.exists():
+        typer.echo(f"reference image does not exist: {image}", err=True)
+        raise typer.Exit(2)
+    source_dir = _resolve_run_dir(run, output_dir)
+    seed_workspace = source_dir / "workspace"
+    if not (seed_workspace / "main.py").is_file():
+        typer.echo(f"no generated run at {source_dir}", err=True)
+        raise typer.Exit(1)
+    settings = _settings(provider, model, output_dir, effort, compile_timeout, physics)
+    if image is not None and settings.provider == "openrouter":
+        typer.echo("OpenRouter does not support reference images.", err=True)
+        raise typer.Exit(1)
+    use_tui = tui if tui is not None else sys.stdout.isatty()
+    try:
+        result = _run_generation(
+            settings,
+            prompt,
+            image,
+            use_tui=use_tui,
+            seed_workspace=seed_workspace,
         )
         if textures:
             _apply_textures(result)
@@ -218,13 +306,27 @@ def _run_generation(
     image_path: Path | None,
     *,
     use_tui: bool,
+    seed_workspace: Path | None = None,
 ) -> dict[str, Any]:
     if use_tui:
-        return _generate_with_tui(settings, prompt, image_path)
-    return asyncio.run(api._run_generation(settings, prompt, image_path=image_path))
+        return _generate_with_tui(settings, prompt, image_path, seed_workspace=seed_workspace)
+    return asyncio.run(
+        api._run_generation(
+            settings,
+            prompt,
+            image_path=image_path,
+            seed_workspace=seed_workspace,
+        )
+    )
 
 
-def _generate_with_tui(settings: Settings, prompt: str, image_path: Path | None) -> dict[str, Any]:
+def _generate_with_tui(
+    settings: Settings,
+    prompt: str,
+    image_path: Path | None,
+    *,
+    seed_workspace: Path | None = None,
+) -> dict[str, Any]:
     try:
         result = run_live(
             lambda on_event: api._run_generation(
@@ -232,6 +334,7 @@ def _generate_with_tui(settings: Settings, prompt: str, image_path: Path | None)
                 prompt,
                 image_path=image_path,
                 on_event=on_event,
+                seed_workspace=seed_workspace,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

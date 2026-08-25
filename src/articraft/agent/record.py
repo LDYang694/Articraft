@@ -10,6 +10,7 @@ from typing import Any
 class Record:
     run_id: str = ""
     status: str = "created"
+    source_run: str = ""
     attempts: int = 0
     error: str = ""
     result: str = ""

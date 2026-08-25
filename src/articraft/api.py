@@ -218,8 +218,13 @@ async def _run_generation(
     *,
     image_path: Path | None = None,
     on_event: EventHandler | None = None,
+    seed_workspace: Path | None = None,
 ) -> dict[str, Any]:
-    """Run one agent generation against fully resolved settings."""
+    """Run one agent generation against fully resolved settings.
+
+    Passing ``seed_workspace`` makes the run an edit of the finished run that
+    workspace belongs to, rather than a new object from the stub.
+    """
     workspace = LocalWorkspace(
         output_dir=settings.output_dir,
         timeout_seconds=settings.compile_timeout_seconds,
@@ -229,7 +234,11 @@ async def _run_generation(
     agent_kwargs: dict[str, Any] = {"max_turns": settings.max_turns}
     if on_event is not None:
         agent_kwargs["on_event"] = on_event
-    return await Agent(model_client, workspace, **agent_kwargs).run(prompt, image_path=image_path)
+    return await Agent(model_client, workspace, **agent_kwargs).run(
+        prompt,
+        image_path=image_path,
+        seed_workspace=seed_workspace,
+    )
 
 
 def _result_from_payload(payload: dict[str, Any]) -> GenerationResult:

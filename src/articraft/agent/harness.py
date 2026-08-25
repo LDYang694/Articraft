@@ -62,11 +62,22 @@ class Agent:
         *,
         run_id: str | None = None,
         image_path: Path | None = None,
+        seed_workspace: Path | None = None,
     ) -> dict[str, Any]:
-        """Run one generation and release the model exactly once."""
+        """Run one generation and release the model exactly once.
+
+        ``seed_workspace`` turns the run into an edit of a finished one: the new
+        run starts from that workspace's code instead of the stub, and the agent
+        is asked to change that object rather than build a new one.
+        """
         data: dict[str, Any] | None = None
         try:
-            data = await self._run(prompt, run_id=run_id, image_path=image_path)
+            data = await self._run(
+                prompt,
+                run_id=run_id,
+                image_path=image_path,
+                seed_workspace=seed_workspace,
+            )
             return data
         finally:
             # The agent owns the model for the whole run, including setup
@@ -84,6 +95,7 @@ class Agent:
         *,
         run_id: str | None = None,
         image_path: Path | None = None,
+        seed_workspace: Path | None = None,
     ) -> dict[str, Any]:
         supports_images = bool(getattr(self.model, "supports_images", True))
         if image_path is not None and not supports_images:
@@ -91,7 +103,7 @@ class Agent:
         image = prepare_image(image_path) if image_path is not None else None
         tool_schemas = tools.schemas(include_images=supports_images)
         self._enabled_tool_names = {str(schema["name"]) for schema in tool_schemas}
-        run_id, run_dir = _create_run(self.workspace, prompt, run_id)
+        run_id, run_dir = _create_run(self.workspace, prompt, run_id, seed_workspace)
         context = ToolContext(self.workspace, run_dir, run_dir / "workspace")
         record_path = run_dir / "record.json"
         try:
@@ -103,6 +115,7 @@ class Agent:
                 context,
                 supports_images=supports_images,
                 tool_schemas=tool_schemas,
+                editing=seed_workspace is not None,
             )
         except asyncio.CancelledError:
             _save_run_error(record_path, "generation cancelled")
@@ -125,6 +138,7 @@ class Agent:
         *,
         supports_images: bool,
         tool_schemas: list[dict[str, Any]],
+        editing: bool,
     ) -> dict[str, Any]:
         conversation_path = run_dir / "conversation.jsonl"
         record_path = run_dir / "record.json"
@@ -134,7 +148,8 @@ class Agent:
         record.result = ""
         record.save(record_path)
 
-        task = _read_prompt("task.md", include_images=supports_images).replace(
+        task_prompt = "edit.md" if editing else "task.md"
+        task = _read_prompt(task_prompt, include_images=supports_images).replace(
             "{{ prompt }}", prompt
         )
         task_message: dict[str, Any] = {"role": "user", "content": task}
@@ -508,17 +523,18 @@ def _create_run(
     workspace: Workspace,
     prompt: str,
     run_id: str | None,
+    seed_workspace: Path | None = None,
 ) -> tuple[str, Path]:
     """Create an explicit run exactly, or atomically suffix an automatic id."""
     if run_id is not None:
-        return run_id, workspace.create_run(run_id)
+        return run_id, workspace.create_run(run_id, seed_workspace=seed_workspace)
 
     base = _run_id_for_prompt(prompt)
     attempt = 1
     while True:
         candidate = base if attempt == 1 else f"{base}-{attempt}"
         try:
-            return candidate, workspace.create_run(candidate)
+            return candidate, workspace.create_run(candidate, seed_workspace=seed_workspace)
         except FileExistsError:
             attempt += 1
 

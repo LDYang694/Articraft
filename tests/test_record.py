@@ -17,6 +17,7 @@ def test_record_saves_slim_run_summary(tmp_path) -> None:
     assert set(json.loads(path.read_text(encoding="utf-8"))) == {
         "run_id",
         "status",
+        "source_run",
         "attempts",
         "error",
         "result",
@@ -30,6 +31,7 @@ def test_record_round_trips_all_fields(tmp_path) -> None:
     record = Record(
         run_id="run_9",
         status="error",
+        source_run="run_8",
         attempts=3,
         error="boom",
         result="result/model.usdz",

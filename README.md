@@ -51,6 +51,18 @@ uv run articraft --image reference.png "reconstruct this desk lamp"
 
 OpenAI, Anthropic, and Gemini accept reference images. OpenRouter accepts text only.
 
+## Change a finished run
+
+Ask for a change instead of describing the whole object again:
+
+```shell
+uv run articraft edit "make the door handles cylindrical" runs/<run-id>
+```
+
+The new run starts from the finished run's code, so the agent edits a working
+object and goes through the same compile and check loop. The source run is left
+as it was, and the new run's `record.json` names it in `source_run`.
+
 ## Use the Python API
 
 Call `generate()` when your program can wait for the complete result:

@@ -884,6 +884,7 @@ def run_scenario(
     max_turns: int = 10,
     assert_exhausted: bool = True,
     on_event: Callable[[events.Event], None] | None = None,
+    seed_workspace: Path | None = None,
 ) -> RunArtifacts:
     """Run the full agent loop for free and return deep-inspectable artifacts.
 
@@ -895,7 +896,8 @@ def run_scenario(
     finite harness models must be consumed exactly; pass
     ``assert_exhausted=False`` for open-ended or live runs. Every event also
     flows to ``on_event`` when given (the artifacts recorder always sees it
-    too).
+    too). Pass ``seed_workspace`` to exercise the edit loop, which starts from
+    a finished run's code instead of the stub.
     """
     if model is None:
         if script is None:
@@ -915,7 +917,7 @@ def run_scenario(
             on_event(event)
 
     agent = Agent(model, env, max_turns=max_turns, on_event=callback)
-    result = run(agent.run(prompt, run_id=run_id))
+    result = run(agent.run(prompt, run_id=run_id, seed_workspace=seed_workspace))
     if assert_exhausted:
         check = getattr(model, "assert_exhausted", None)
         if callable(check):

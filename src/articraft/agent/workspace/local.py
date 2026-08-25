@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -53,18 +54,30 @@ class LocalWorkspace:
     def __init__(self, **kwargs: Any):
         self.config = LocalWorkspaceConfig(**kwargs)
 
-    def create_run(self, run_id: str) -> Path:
+    def create_run(self, run_id: str, *, seed_workspace: Path | None = None) -> Path:
         run_id = _validate_run_id(run_id)
+        # Check the seed before creating anything, so a bad one leaves no run.
+        seed = Path(seed_workspace).resolve() if seed_workspace is not None else None
+        if seed is not None and not seed.joinpath("main.py").is_file():
+            raise ValueError(f"seed workspace has no main.py: {seed}")
         run_dir = self.config.output_dir / run_id
         if run_dir.exists():
             raise FileExistsError(f"run already exists: {run_id}")
 
-        (run_dir / "workspace").mkdir(parents=True)
+        workspace = run_dir / "workspace"
+        workspace.mkdir(parents=True)
         (run_dir / "result").mkdir()
-        _link_sdk_docs(run_dir / "workspace")
-        run_dir.joinpath("workspace", "main.py").write_text(DEFAULT_MAIN_PY, encoding="utf-8")
+        _link_sdk_docs(workspace)
+        if seed is None:
+            workspace.joinpath("main.py").write_text(DEFAULT_MAIN_PY, encoding="utf-8")
+        else:
+            _copy_seed_workspace(seed, workspace)
         (run_dir / "conversation.jsonl").touch()
-        Record(run_id=run_id).save(run_dir / "record.json")
+        # A seed is always a run's `workspace`, so its parent names the source run.
+        Record(
+            run_id=run_id,
+            source_run="" if seed is None else seed.parent.name,
+        ).save(run_dir / "record.json")
         return run_dir
 
     def compile_path(self, run_dir: Path | str) -> CompilePayload:
@@ -149,6 +162,22 @@ def _validate_run_id(run_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
         raise ValueError("run_id must be a simple folder name")
     return value
+
+
+def _copy_seed_workspace(seed: Path, workspace: Path) -> None:
+    """Seed a new run with a finished run's code.
+
+    `docs` is skipped because the caller has already linked a fresh one: the
+    seed's own entry is a symlink into the installed package. `result` is never
+    copied, so the new run's USDZ can only come from its own compile.
+    """
+
+    shutil.copytree(
+        seed,
+        workspace,
+        ignore=shutil.ignore_patterns("docs", "__pycache__"),
+        dirs_exist_ok=True,
+    )
 
 
 def _link_sdk_docs(workspace: Path) -> None:

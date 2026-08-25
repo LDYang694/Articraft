@@ -46,18 +46,24 @@ class FakeAgent:
         self.env = env
         self.kwargs = kwargs
         self.prompt = ""
+        self.run_id: str | None = None
         self.image_path: Path | None = None
+        self.seed_workspace: Path | None = None
         self.instances.append(self)
 
     async def run(
         self,
         prompt: str,
         *,
+        run_id: str | None = None,
         image_path: Path | None = None,
+        seed_workspace: Path | None = None,
     ) -> dict[str, object]:
         try:
             self.prompt = prompt
+            self.run_id = run_id
             self.image_path = image_path
+            self.seed_workspace = seed_workspace
             return self.result
         finally:
             await self.model.close()
@@ -511,6 +517,60 @@ def test_cli_exits_nonzero_when_agent_fails(monkeypatch) -> None:
     assert "error: compile failed" in result.output
 
 
+def _finished_run(root: Path, run_id: str = "run-demo") -> Path:
+    run_dir = root / run_id
+    (run_dir / "workspace").mkdir(parents=True)
+    (run_dir / "workspace" / "main.py").write_text("object_model = None\n", encoding="utf-8")
+    return run_dir
+
+
+def test_cli_edit_seeds_the_run_from_the_named_run(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    runs = tmp_path / "runs"
+    source = _finished_run(runs)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["edit", "make the handle cylindrical", "run-demo", "--output-dir", str(runs)],
+    )
+
+    assert result.exit_code == 0
+    agent = FakeAgent.instances[0]
+    assert agent.prompt == "make the handle cylindrical"
+    assert agent.seed_workspace == source / "workspace"
+
+
+def test_cli_edit_accepts_a_run_path(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    source = _finished_run(tmp_path)
+
+    result = CliRunner().invoke(app.cli, ["edit", "shorten it", str(source)])
+
+    assert result.exit_code == 0
+    assert FakeAgent.instances[0].seed_workspace == source / "workspace"
+
+
+def test_cli_edit_rejects_a_run_without_generated_code(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    empty = tmp_path / "run-empty"
+    empty.mkdir()
+
+    result = CliRunner().invoke(app.cli, ["edit", "shorten it", str(empty)])
+
+    assert result.exit_code == 1
+    assert "no generated run at" in result.output
+    assert FakeAgent.instances == []
+
+
 def test_cli_replays_recorded_run(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-demo"
     run_dir.mkdir()
@@ -601,6 +661,7 @@ def test_main_args_accept_bare_prompt() -> None:
 
 def test_main_args_keep_commands_and_help() -> None:
     assert app._app_args(["generate", "articulated lamp"]) == ["generate", "articulated lamp"]
+    assert app._app_args(["edit", "taller shade", "run-x"]) == ["edit", "taller shade", "run-x"]
     assert app._app_args(["replay", "run-x"]) == ["replay", "run-x"]
     assert app._app_args(["view", "run-x"]) == ["view", "run-x"]
     assert app._app_args(["texture", "run-x"]) == ["texture", "run-x"]
