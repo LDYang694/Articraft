@@ -6,14 +6,16 @@ import logging
 import random
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 import websockets
 from websockets.exceptions import WebSocketException
 
 from articraft.errors import ModelError
 from articraft.settings import Settings, get_settings
 
-_WEBSOCKET_URL = "wss://api.openai.com/v1/responses"
+_DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _MAX_OUTPUT_TOKENS = 128_000
 _RETRY_BASE_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 20.0
@@ -42,15 +44,49 @@ _MODEL_ALIASES = {"gpt-5.6": "gpt-5.6-sol"}
 KNOWN_MODELS = tuple(sorted((*_MODELS, *_MODEL_ALIASES)))
 
 
+def responses_http_url(base_url: str | None) -> str:
+    root = (base_url or _DEFAULT_OPENAI_BASE_URL).strip() or _DEFAULT_OPENAI_BASE_URL
+    parsed = urlparse(root)
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/v1"
+    if not path.endswith("/responses"):
+        if not path.endswith("/v1"):
+            path = f"{path}/v1"
+        path = f"{path}/responses"
+    return urlunparse((parsed.scheme or "https", parsed.netloc, path, "", "", ""))
+
+
+def responses_websocket_url(base_url: str | None) -> str:
+    parsed = urlparse(responses_http_url(base_url))
+    scheme = "wss" if parsed.scheme != "http" else "ws"
+    return urlunparse((scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
 class OpenAIModel:
-    def __init__(self, settings: Settings | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        client: httpx.AsyncClient | None = None,
+    ):
         self.config = settings or get_settings()
         if not self.config.openai_api_key:
             raise ModelError("OpenAI credentials are required. Set OPENAI_API_KEY.")
+        # An injected client is closed with the model. It exists for tests.
+        self._client = client
         self._websocket: Any = None
         self._input_items: list[dict[str, Any]] = []
         self._last_message_count = 0
         self._previous_response_id: str | None = None
+
+    def _uses_http(self) -> bool:
+        """Whether to send plain HTTP instead of the chained websocket.
+
+        A custom base URL means a proxy, and a proxy is not assumed to keep
+        response state, so every request carries the whole conversation.
+        """
+        return bool((self.config.openai_base_url or "").strip())
 
     @property
     def context_window_tokens(self) -> int:
@@ -64,11 +100,13 @@ class OpenAIModel:
     ) -> dict[str, Any]:
         """Query the OpenAI Responses API and return the completed text response."""
         new_items = self._new_input_items(messages)
-        previous_response_id = self._previous_response_id
-        if previous_response_id is None:
-            input_items = [*self._input_items, *new_items]
-        else:
+        chained = self._previous_response_id is not None and not self._uses_http()
+        if chained:
             input_items = new_items
+            previous_response_id = self._previous_response_id
+        else:
+            input_items = [*self._input_items, *new_items]
+            previous_response_id = None
 
         request = self._request(messages, input_items, previous_response_id, tools)
         fallback_request = self._request(
@@ -132,6 +170,10 @@ class OpenAIModel:
 
     async def close(self) -> None:
         await self._close_websocket()
+        client = self._client
+        self._client = None
+        if client is not None:
+            await client.aclose()
 
     def _request(
         self,
@@ -193,12 +235,44 @@ class OpenAIModel:
         fallback_request: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            return await self._send_websocket(request)
-        except _OpenAIWebSocketError as exc:
+            return await self._send_once(request)
+        except _OpenAIRequestError as exc:
             if exc.code != "previous_response_not_found" or "previous_response_id" not in request:
                 raise
             logger.warning("OpenAI lost the previous response; resending the full conversation")
-            return await self._send_websocket(fallback_request, force_reconnect=True)
+            return await self._send_once(fallback_request, force_reconnect=True)
+
+    async def _send_once(
+        self,
+        request: dict[str, Any],
+        *,
+        force_reconnect: bool = False,
+    ) -> dict[str, Any]:
+        if self._uses_http():
+            return await self._send_http(request)
+        return await self._send_websocket(request, force_reconnect=force_reconnect)
+
+    async def _send_http(self, request: dict[str, Any]) -> dict[str, Any]:
+        response = await self._client_or_create().post(
+            responses_http_url(self.config.openai_base_url),
+            headers={
+                "Authorization": f"Bearer {self.config.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=request,
+            timeout=self.config.openai_request_timeout_seconds,
+        )
+        payload = _http_payload(response)
+        if response.status_code >= 400:
+            raise _OpenAIRequestError.from_http(response.status_code, payload)
+        if not isinstance(payload, dict):
+            raise ModelError("OpenAI HTTP response was not a JSON object")
+        return payload
+
+    def _client_or_create(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient()
+        return self._client
 
     async def _send_websocket(
         self,
@@ -220,7 +294,7 @@ class OpenAIModel:
 
         await self._close_websocket()
         self._websocket = await websockets.connect(
-            _WEBSOCKET_URL,
+            responses_websocket_url(self.config.openai_base_url),
             additional_headers={"Authorization": f"Bearer {self.config.openai_api_key}"},
             open_timeout=_WEBSOCKET_OPEN_TIMEOUT_SECONDS,
             max_size=None,
@@ -262,20 +336,20 @@ async def _receive_websocket_response(websocket: Any) -> dict[str, Any]:
         event_type = event.get("type")
 
         if event_type == "error":
-            raise _OpenAIWebSocketError.from_event(event)
+            raise _OpenAIRequestError.from_event(event)
         if event_type in {"response.completed", "response.incomplete"}:
             response = event.get("response")
             if not isinstance(response, dict):
-                raise _OpenAIWebSocketError(
+                raise _OpenAIRequestError(
                     code="missing_response",
                     message=f"{event_type} did not include a response object",
                 )
             return response
         if event_type == "response.failed":
-            raise _OpenAIWebSocketError.from_event(event)
+            raise _OpenAIRequestError.from_event(event)
 
 
-class _OpenAIWebSocketError(ModelError):
+class _OpenAIRequestError(ModelError):
     def __init__(self, *, code: str | None, message: str, status: int | None = None):
         self.code = code
         self.status = status
@@ -283,7 +357,7 @@ class _OpenAIWebSocketError(ModelError):
         super().__init__(f"{prefix}{message}")
 
     @classmethod
-    def from_event(cls, event: dict[str, Any]) -> _OpenAIWebSocketError:
+    def from_event(cls, event: dict[str, Any]) -> _OpenAIRequestError:
         error: Any = event.get("error")
         if event.get("type") == "response.failed" and isinstance(event.get("response"), dict):
             error = event["response"].get("error") or error
@@ -300,9 +374,45 @@ class _OpenAIWebSocketError(ModelError):
             status=status if isinstance(status, int) else None,
         )
 
+    @classmethod
+    def from_http(cls, status: int, payload: Any) -> _OpenAIRequestError:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            code = error.get("code")
+            message = error.get("message") or json.dumps(error, sort_keys=True)
+        elif isinstance(error, str):
+            code = None
+            message = error
+        else:
+            code = None
+            message = str(payload) if payload else f"OpenAI HTTP {status}"
+        return cls(
+            code=str(code) if code is not None else None,
+            message=str(message),
+            status=status,
+        )
+
+
+def _http_payload(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        text = response.text.strip()
+        return {"error": {"message": text or f"OpenAI HTTP {response.status_code}"}}
+
 
 def _should_retry(exc: BaseException) -> bool:
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, OSError, WebSocketException)):
+    if isinstance(
+        exc,
+        (
+            asyncio.TimeoutError,
+            TimeoutError,
+            OSError,
+            WebSocketException,
+            httpx.TimeoutException,
+            httpx.TransportError,
+        ),
+    ):
         status = _http_status(exc)
         return status is None or _is_transient_status(status)
 
@@ -312,7 +422,7 @@ def _should_retry(exc: BaseException) -> bool:
 
     if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
         return True
-    if isinstance(exc, _OpenAIWebSocketError):
+    if isinstance(exc, _OpenAIRequestError):
         if exc.code == "previous_response_not_found":
             return False
         return exc.code in {

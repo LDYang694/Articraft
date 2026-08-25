@@ -4,10 +4,16 @@ import asyncio
 import json
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from articraft.agent import ContextSummarizer
-from articraft.agent.provider.openai import OpenAIModel, context_window_tokens_for
+from articraft.agent.provider.openai import (
+    OpenAIModel,
+    context_window_tokens_for,
+    responses_http_url,
+    responses_websocket_url,
+)
 from articraft.errors import ModelError
 from articraft.settings import DEFAULT_MAX_TURNS, Settings, get_settings
 
@@ -83,8 +89,42 @@ def patch_websocket(monkeypatch: pytest.MonkeyPatch, socket: FakeWebSocket) -> N
 
 def openai_model(**kwargs: Any) -> OpenAIModel:
     kwargs.setdefault("openai_model", "gpt-5.6")
-    kwargs.setdefault("openai_reasoning_effort", "high")
+    kwargs.setdefault("openai_reasoning_effort", "xhigh")
     return OpenAIModel(Settings(openai_api_key="sk-test", **kwargs))
+
+
+def completed_http_response(text: str, *, response_id: str = "resp_1") -> dict[str, object]:
+    return {
+        "id": response_id,
+        "status": "completed",
+        "model": "gpt-5.6",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        ],
+    }
+
+
+def openai_http_model(
+    responses: list[dict[str, object] | httpx.Response],
+    **kwargs: Any,
+) -> tuple[OpenAIModel, list[httpx.Request]]:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        item = responses.pop(0)
+        if isinstance(item, httpx.Response):
+            return item
+        return httpx.Response(200, json=item)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    kwargs.setdefault("openai_base_url", "https://proxy.example/v1")
+    kwargs.setdefault("openai_model", "gpt-5.6")
+    kwargs.setdefault("openai_reasoning_effort", "xhigh")
+    return OpenAIModel(Settings(openai_api_key="sk-test", **kwargs), client=client), requests
 
 
 def test_openai_model_uses_websocket(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,12 +146,73 @@ def test_openai_model_uses_websocket(monkeypatch: pytest.MonkeyPatch) -> None:
             "type": "response.create",
             "model": "gpt-5.6",
             "input": [{"role": "user", "content": "build a hinge"}],
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": "xhigh"},
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "max_output_tokens": 128_000,
             "instructions": "write clean code",
         }
+    ]
+
+
+def test_responses_urls_from_base_url() -> None:
+    assert responses_http_url(None) == "https://api.openai.com/v1/responses"
+    assert responses_http_url("https://proxy.example/v1") == "https://proxy.example/v1/responses"
+    assert responses_http_url("https://proxy.example/v1/") == "https://proxy.example/v1/responses"
+    assert responses_http_url("https://proxy.example") == "https://proxy.example/v1/responses"
+    assert responses_websocket_url(None) == "wss://api.openai.com/v1/responses"
+    assert (
+        responses_websocket_url("https://proxy.example:18888/v1")
+        == "wss://proxy.example:18888/v1/responses"
+    )
+    assert responses_websocket_url("http://localhost:8080/v1") == "ws://localhost:8080/v1/responses"
+
+
+def test_openai_model_posts_to_custom_base_url() -> None:
+    model, requests = openai_http_model([completed_http_response("result")])
+
+    result = run(model.query([{"role": "user", "content": "hello"}]))
+
+    assert result["text"] == "result"
+    assert str(requests[0].url) == "https://proxy.example/v1/responses"
+    assert requests[0].headers["Authorization"] == "Bearer sk-test"
+    payload = json.loads(requests[0].content)
+    assert payload["model"] == "gpt-5.6"
+    assert payload["input"] == [{"role": "user", "content": "hello"}]
+    assert payload["store"] is False
+
+
+def test_openai_http_sends_full_conversation_without_previous_response_id() -> None:
+    model, requests = openai_http_model(
+        [
+            completed_http_response("first", response_id="resp_1"),
+            completed_http_response("second", response_id="resp_2"),
+        ]
+    )
+
+    run(model.query([{"role": "user", "content": "hello"}]))
+    run(
+        model.query(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "first"},
+                {"role": "user", "content": "continue"},
+            ]
+        )
+    )
+
+    first = json.loads(requests[0].content)
+    second = json.loads(requests[1].content)
+    assert "previous_response_id" not in first
+    assert "previous_response_id" not in second
+    assert first["input"] == [{"role": "user", "content": "hello"}]
+    assert second["input"] == [
+        {"role": "user", "content": "hello"},
+        {
+            "type": "message",
+            "content": [{"type": "output_text", "text": "first"}],
+        },
+        {"role": "user", "content": "continue"},
     ]
 
 
@@ -505,6 +606,7 @@ def test_openai_model_loads_dotenv(tmp_path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setitem(Settings.model_config, "env_file", ".env")
     get_settings.cache_clear()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("ARTICRAFT_OUTPUT_DIR", raising=False)
     monkeypatch.delenv("ARTICRAFT_MODEL", raising=False)
     monkeypatch.delenv("ARTICRAFT_REASONING_EFFORT", raising=False)
@@ -530,6 +632,27 @@ def test_openai_model_loads_dotenv(tmp_path, monkeypatch: pytest.MonkeyPatch) ->
     assert socket.sent[0]["max_output_tokens"] == 128_000
     assert socket.sent[0]["include"] == ["reasoning.encrypted_content"]
     assert socket.sent[0]["store"] is False
+
+
+def test_openai_model_loads_base_url_from_dotenv(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(Settings.model_config, "env_file", ".env")
+    get_settings.cache_clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    tmp_path.joinpath(".env").write_text(
+        "OPENAI_API_KEY=sk-test\nOPENAI_BASE_URL=https://proxy.example/v1\n",
+        encoding="utf-8",
+    )
+    model, requests = openai_http_model(
+        [completed_http_response("result")],
+        openai_base_url=Settings().openai_base_url,  # pyright: ignore[reportCallIssue]
+    )
+
+    result = run(model.query([{"role": "user", "content": "hello"}]))
+
+    assert result["text"] == "result"
+    assert str(requests[0].url) == "https://proxy.example/v1/responses"
 
 
 def test_openai_model_raises_on_incomplete_response(monkeypatch: pytest.MonkeyPatch) -> None:

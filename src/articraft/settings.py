@@ -11,6 +11,7 @@ DEFAULT_OUTPUT_DIR = Path("runs")
 DEFAULT_MAX_TURNS = 100
 DEFAULT_COMPILE_TIMEOUT_SECONDS = 900.0
 DEFAULT_OPENAI_MODEL = "gpt-5.6"
+DEFAULT_OPENAI_REASONING_EFFORT = "xhigh"
 DEFAULT_OPENAI_MAX_ATTEMPTS = 4
 DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS = 900.0
 DEFAULT_PROVIDER = "openai"
@@ -46,10 +47,11 @@ class Settings(BaseSettings):
         validation_alias="ARTICRAFT_MODEL",
     )
     openai_reasoning_effort: str = Field(
-        default="high",
+        default=DEFAULT_OPENAI_REASONING_EFFORT,
         validation_alias="ARTICRAFT_REASONING_EFFORT",
     )
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_max_attempts: int = Field(
         default=DEFAULT_OPENAI_MAX_ATTEMPTS,
         ge=1,
