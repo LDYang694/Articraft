@@ -10,7 +10,9 @@ from articraft.tui import PRIMARY_STYLE, RunRenderer
 
 
 def _renderer() -> tuple[RunRenderer, Console]:
-    console = Console(file=io.StringIO(), width=120)
+    # Rich only honors an explicit width when height is given too; without it
+    # the console falls back to terminal detection and wraps at 80.
+    console = Console(file=io.StringIO(), width=120, height=40)
     return RunRenderer(console), console
 
 
