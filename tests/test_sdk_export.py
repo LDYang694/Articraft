@@ -17,6 +17,7 @@ from articraft.sdk import (
     RigidBodyAssembly,
 )
 from articraft.sdk.export import export_assembly
+from articraft.sdk.materials import to_linear
 
 
 def test_export_writes_rigid_part_bodies_and_named_child_meshes(tmp_path) -> None:
@@ -46,13 +47,10 @@ def test_export_writes_rigid_part_bodies_and_named_child_meshes(tmp_path) -> Non
     trim = stage.GetPrimAtPath("/World/hinge/rigid_bodies/base/shapes/trim")
     assert shell.GetTypeName() == "Mesh"
     assert trim.GetTypeName() == "Mesh"
+    # displayColor is linear, so the authored display color is converted first.
     assert tuple(
-        round(float(value), 6) for value in shell.GetAttribute("primvars:displayColor").Get()[0]
-    ) == (
-        0.6,
-        0.1,
-        0.12,
-    )
+        float(value) for value in shell.GetAttribute("primvars:displayColor").Get()[0]
+    ) == pytest.approx(to_linear((0.6, 0.1, 0.12)))
     assert trim.GetAttribute("primvars:displayOpacity").Get() == [0.7]
 
     joint_prim = stage.GetPrimAtPath("/World/hinge/joints/base_to_door")

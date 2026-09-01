@@ -1,10 +1,8 @@
-"""Fetch and cache ambientCG PBR material sets (offline after first pull).
+"""ambientCG's CC0 texture library, cached after the first pull.
 
-ambientCG materials are CC0, so the maps can be bundled straight into an
-exported USDZ. ambientCG ships one zip per resolution holding the whole map
-set, so this adapter downloads the zip once, extracts it into the cache, and
-locates the channels (Color / Roughness / NormalGL / Metalness) by filename
-suffix, returning a :class:`TextureSet` the rest of the texture pipeline reads.
+The broad, evenly shot half of the two libraries in `textures.py`. It ships one
+zip per resolution holding the whole map set, so this downloads the zip once,
+extracts it into the cache, and locates the channels by filename suffix.
 
 Download scheme (no API key)::
 
@@ -14,57 +12,36 @@ Download scheme (no API key)::
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 
-from articraft.sdk.materials import Material
-
-
-@dataclass(frozen=True, slots=True)
-class TextureSet:
-    """Local paths to a fetched PBR texture set.
-
-    Only ``base_color`` is guaranteed; ``roughness``/``normal``/``metalness``
-    are present when the material provides them.
-    """
-
-    slug: str
-    resolution: str
-    base_color: Path
-    roughness: Path | None = None
-    normal: Path | None = None
-    metalness: Path | None = None
-
-    def maps(self) -> dict[str, Path]:
-        found = {"base_color": self.base_color}
-        for channel in ("roughness", "normal", "metalness"):
-            path = getattr(self, channel)
-            if path is not None:
-                found[channel] = path
-        return found
-
-
-@dataclass(frozen=True, slots=True)
-class MaterialSpec:
-    """ambientCG source for one built-in surface."""
-
-    asset: str
-
+from articraft.sdk.textures import (
+    CACHE_ROOT,
+    DOWNLOAD_TIMEOUT_SECONDS,
+    Candidate,
+    TextureSet,
+)
 
 _URL = "https://ambientcg.com/get?file={asset}_{res}-JPG.zip"
-_CACHE_ROOT = Path.home() / ".cache" / "articraft" / "ambientcg"
-_DOWNLOAD_TIMEOUT_SECONDS = 30
+_SEARCH_URL = (
+    "https://ambientcg.com/api/v2/full_json"
+    "?type=Material&q={query}&limit={limit}&include=displayData,tagData,imageData"
+)
+_THUMBNAIL_SIZES = ("512-PNG", "256-PNG", "1024-PNG", "128-PNG")
 
-# ambientCG filename suffix -> TextureSet channel.
+# ambientCG filename suffix -> TextureSet channel. The zips also carry
+# NormalDX and Displacement, which UsdPreviewSurface has no use for.
 _CHANNELS = {
     "_Color.": "base_color",
     "_Roughness.": "roughness",
     "_NormalGL.": "normal",
     "_Metalness.": "metalness",
+    "_AmbientOcclusion.": "occlusion",
 }
 
 
@@ -80,7 +57,7 @@ def fetch_texture_set(
     callers can fall back to a parametric ``Material``.
     """
 
-    cache = (cache_root or _CACHE_ROOT) / asset / resolution
+    cache = (cache_root or (CACHE_ROOT / "ambientcg")) / asset / resolution
     cache.mkdir(parents=True, exist_ok=True)
 
     found = _locate(cache)
@@ -97,28 +74,77 @@ def fetch_texture_set(
         roughness=found.get("roughness"),
         normal=found.get("normal"),
         metalness=found.get("metalness"),
+        occlusion=found.get("occlusion"),
     )
 
 
-def fetch_material(
-    kind: Material,
+def search(
+    query: str,
     *,
-    resolution: str = "1K",
+    limit: int = 6,
     cache_root: Path | None = None,
-) -> tuple[TextureSet, MaterialSpec]:
-    """Fetch the texture set and rendering metadata for ``kind``.
+) -> list[Candidate]:
+    """Find ambientCG materials matching ``query``, newest and most popular first.
 
-    The asset comes from the material itself, so a derived material keeps the
-    texture of whatever it was derived from.
+    A hand-written list of slugs is the wrong way to choose a surface. It ages,
+    it is short, and a name says nothing about how coarse a grain is: one run
+    spent three reviews fighting the grain direction of an asset whose own tags
+    read "grain, horizontal". The catalogue holds hundreds of woods tagged
+    fine, smooth, light, or plain, so the honest answer is to look.
+
+    Each candidate carries a cached thumbnail, because the tags narrow the
+    field but only the picture settles it.
     """
 
-    if kind.texture is None:
-        raise RuntimeError(f"material {kind.name!r} has no texture")
-    spec = MaterialSpec(kind.texture)
-    return (
-        fetch_texture_set(spec.asset, resolution=resolution, cache_root=cache_root),
-        spec,
-    )
+    url = _SEARCH_URL.format(query=urllib.parse.quote(query), limit=max(1, min(limit, 24)))
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+    except Exception as exc:
+        raise RuntimeError(f"could not search ambientCG for {query!r}") from exc
+
+    cache = (cache_root or (CACHE_ROOT / "ambientcg")) / "_thumbnails"
+    cache.mkdir(parents=True, exist_ok=True)
+    candidates: list[Candidate] = []
+    for asset in payload.get("foundAssets") or []:
+        slug = str(asset.get("assetId") or "")
+        thumbnail = _thumbnail(asset, cache)
+        if not slug or thumbnail is None:
+            continue
+        candidates.append(
+            Candidate(
+                slug=slug,
+                tags=tuple(str(tag) for tag in asset.get("tags") or []),
+                preview=thumbnail,
+            )
+        )
+    return candidates
+
+
+def _thumbnail(asset: dict, cache: Path) -> Path | None:
+    """Cache one preview image, preferring a size large enough to read a grain."""
+
+    images = asset.get("previewImage")
+    if not isinstance(images, dict):
+        return None
+    url = next((images[key] for key in _THUMBNAIL_SIZES if key in images), None)
+    if not isinstance(url, str):
+        return None
+    destination = cache / f"{asset.get('assetId')}.png"
+    if destination.is_file():
+        return destination
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
+            destination.open("wb") as output,
+        ):
+            shutil.copyfileobj(response, output)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        return None
+    return destination
 
 
 def _locate(cache: Path) -> dict[str, Path]:
@@ -138,7 +164,7 @@ def _download_and_extract(url: str, cache: Path) -> None:
         zip_path = Path(file.name)
     try:
         with (
-            urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response,
+            urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
             zip_path.open("wb") as output,
         ):
             shutil.copyfileobj(response, output)

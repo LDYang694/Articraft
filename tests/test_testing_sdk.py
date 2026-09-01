@@ -14,6 +14,7 @@ from articraft.sdk import (
     JointAxis,
     JointDOF,
     JointFrame,
+    Material,
     MeshGeometry,
     MeshHealthIssue,
     RigidBodyAssembly,
@@ -498,6 +499,52 @@ def test_absurd_dimensions_and_scale_outliers_are_warnings() -> None:
 
     assert relative_ctx.warn_if_absurd_dimensions()
     assert "extreme scale outlier" in relative_ctx.report().warnings[0]
+
+
+def test_surfaces_with_no_material_are_a_warning_not_a_failure() -> None:
+    model = RigidBodyAssembly("bare")
+    base = model.rigid_body("base")
+    add_box(base, "body")
+    base.add(Pos(X=2.0) * Box(1.0, 1.0, 1.0), name="trim", material=Material.STEEL)
+    ctx = TestContext(model)
+
+    assert ctx.warn_if_shapes_have_no_appearance()
+    report = ctx.report()
+
+    # Appearance is a design judgement, so it never blocks a build.
+    assert report.passed
+    assert "1 of 2 shapes have no material" in report.warnings[0]
+    assert "'base'/'body'" in report.warnings[0]
+    assert report.metrics[0].name == "shapes without material"
+    assert report.metrics[0].value == 1.0
+
+
+def test_one_color_for_every_surface_is_a_warning() -> None:
+    """A whole object on one library color reads as a study model."""
+
+    model = RigidBodyAssembly("monotone")
+    base = model.rigid_body("base")
+    for index, name in enumerate(("body", "door", "handle", "foot")):
+        base.add(Pos(X=index * 2.0) * Box(1.0, 1.0, 1.0), name=name, material=Material.STEEL)
+    ctx = TestContext(model)
+
+    assert ctx.warn_if_shapes_have_no_appearance()
+    warnings_text = ctx.report().warnings[0]
+
+    assert "all 4 shapes share one color" in warnings_text
+    assert "differ between" in warnings_text
+
+
+def test_varied_surfaces_pass_without_a_warning() -> None:
+    model = RigidBodyAssembly("varied")
+    base = model.rigid_body("base")
+    base.add(Box(1.0, 1.0, 1.0), name="body", material=Material.HARDWOOD)
+    base.add(Pos(X=2.0) * Box(1.0, 1.0, 1.0), name="handle", material=Material.STEEL)
+    ctx = TestContext(model)
+
+    assert ctx.warn_if_shapes_have_no_appearance()
+
+    assert ctx.report().warnings == ()
 
 
 def _swing_arm() -> RigidBodyAssembly:

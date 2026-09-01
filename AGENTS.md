@@ -30,6 +30,7 @@ Use these areas as the main boundaries:
 - `models/` owns model adapters.
 - `agent/workspace/` owns run creation and compile execution: where the agent works.
 - `compiler/` owns the compile itself, plus its result and the signals the agent reads.
+- `render/` owns the Blender subprocess that path-traces an exported USDZ.
 - `sdk/` owns the small build123d object API, joints, and export helpers.
 - `prompts/` owns the agent prompts.
 - `settings.py` owns default runtime settings.
@@ -61,6 +62,71 @@ uv run articraft
 `articraft edit "<change>" <run>` runs the same loop against a finished run's
 code: it seeds a new run from that run's workspace and uses `prompts/edit.md`
 instead of `prompts/task.md`.
+
+`--textures` turns texture maps on for the whole run, not for a pass after it,
+so the agent compiles and judges the textured object.
+
+Appearance is judged on a real render. The `critic` tool path-traces the USDZ
+from the last successful compile with Blender and grades those images, because
+the rasterizer in `sdk/visual.py` draws no texture and no bounced light, and a
+judge looking at it can only answer about color. Blender is a hard dependency
+of that tool: point at it with `ARTICRAFT_BLENDER`, and let a missing one raise
+rather than falling back to a preview. Everything a review writes lands in the
+workspace's `review/`, which `workspace_digest` skips on purpose so a review
+does not make the compile it graded look stale.
+
+A run gets a fixed number of reviews, and the critic may only raise issues the
+author can act on. Both rules exist because a run without them did not
+converge: the rubric asked for texture offsets and bump strength, which no
+field controls, so every review returned the same list and the object drifted
+while chasing it. When adding to `prompts/critic.md`, check the request against
+the fields on `Material` first. The texture criteria live in a `<!-- textures -->`
+section that is cut out when a run exports no maps, for the same reason.
+
+A review sees the run's reference photograph when it has one, and grades the
+renders against it on material alone. It also refuses a compile the workspace
+has moved past, because a USDZ built before the last edit shows a surface the
+script no longer authors.
+
+The renders are an instrument, so the rig is calibrated rather than tuned by
+eye: a surface renders at the brightness it was authored with. Two settings
+broke that silently. Blender's default AgX view transform lifted a 0.20 surface
+to 0.34 while leaving a 0.80 one at 0.81, so the worker sets `Standard`. A rig
+matched by eye to one product photograph then over-exposed everything. Run
+`uv run pytest -m blender` after touching the lighting or the view transform.
+
+Nothing else about a render is comparable to a photograph. Light, exposure, and
+camera all differ, so `prompts/critic.md` says which readings survive that and
+which do not: hue, saturation, finish, and the ordering between parts do, and
+overall brightness does not. Texture identity is settled by `find_texture`
+instead, which shows flat swatches beside the reference, because two flat
+samples of a material compare cleanly and a render and a photograph do not.
+
+The critic answers through a model client it builds per review; it must never
+share the run's client or reuse one across reviews, because a chained provider
+keeps conversation state and the judge would repeat itself.
+
+Authored colors are display colors. Anything that feeds a renderer, USD's
+`diffuseColor` included, linearizes them first with `materials.to_linear`.
+
+A textured surface gets its color by moving the map's own average onto the
+authored one, in LAB, per channel. Every pixel keeps its distance from that
+mean, which is what the pattern is; a multiply would stretch the bright end and
+flatten the dark one. Pillow stores LAB's a and b signed in unsigned bytes, so
+`_signed_lab` undoes that before any arithmetic -- reading them raw exported
+black handles as green.
+
+Appearance work does not need a generation. `scripts/material_lab.py` takes a
+finished run, compiles it with textures, path-traces it, and prints the color a
+region reports beside the color the reference reports for the same region:
+
+```bash
+uv run python scripts/material_lab.py runs/<run-id> --region 0.42,0.40,0.56,0.60
+```
+
+It works on a scratch copy, costs nothing without `--critic`, and turns a
+material question into two rows of numbers. Use it instead of re-running a
+generation to look at a material change.
 
 The compile worker entry point is:
 

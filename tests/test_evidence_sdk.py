@@ -17,6 +17,7 @@ from articraft.sdk import (
     JointFrame,
     LatheGeometry,
     LineOverlay,
+    Material,
     MeridionalSectionView,
     ModelView,
     MotionStripView,
@@ -213,6 +214,36 @@ def test_model_section_meridional_and_motion_views_render(monkeypatch, tmp_path:
     artifact = ctx.attach_artifact("motion.png", name="slider motion")
     assert artifact.path == "motion.png"
     assert Path(artifact.path).is_file()
+
+
+def test_material_view_previews_the_color_that_was_authored(monkeypatch, tmp_path: Path) -> None:
+    """A mid gray used to preview as a light gray, one step up the ramp.
+
+    Colors are authored as display colors, so shading has to linearize them
+    first. Skipping that lit every surface about a stop too bright, which is
+    how a mid oak came back as bleached pine.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    model = RigidBodyAssembly("swatch")
+    model.rigid_body("body").add(
+        BoxGeometry((0.3, 0.3, 0.3)),
+        name="cube",
+        material=Material(name="matte", density=1000.0, base_color=(0.5, 0.5, 0.5)),
+    )
+
+    output = render_view(
+        model,
+        ModelView.three_quarter(width=200, height=160, color_by="material"),
+        "swatch.png",
+    )
+
+    pixels = np.asarray(Image.open(output).convert("RGB"), dtype=float).reshape((-1, 3))
+    background = pixels[0]
+    surface = pixels[np.abs(pixels - background).sum(axis=1) > 12]
+    # The face turned most fully toward the lights is the one that reports the
+    # material's own color; the others fall off from it.
+    assert surface.max() / 255.0 == pytest.approx(0.5, abs=0.1)
 
 
 def test_motion_strip_uses_an_explicit_dof_on_a_multi_dof_joint(

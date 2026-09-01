@@ -40,11 +40,27 @@ class Agent:
         workspace: Workspace,
         *,
         on_event: Callable[[events.Event], None] | None = None,
+        new_reviewer: Callable[[], tools.Reviewer] | None = None,
+        blender: str | None = None,
+        textures: bool = False,
         **kwargs: Any,
     ):
+        """``new_reviewer`` builds the model that answers the `critic` tool.
+
+        A factory rather than a client, because each review must start clean: a
+        provider that chains its requests would carry the run's conversation, or
+        an earlier verdict, into the next review. The critic tool closes each
+        client it builds.
+
+        ``blender`` is the executable that renders what the critic grades.
+        """
+
         self.config = AgentConfig(**kwargs)
         self.model = model
         self.workspace = workspace
+        self.new_reviewer = new_reviewer
+        self.blender = blender
+        self.textures = textures
         self.messages: list[dict[str, Any]] = []
         self._on_event = on_event
         self._enabled_tool_names = set(tools.TOOLS)
@@ -104,7 +120,14 @@ class Agent:
         tool_schemas = tools.schemas(include_images=supports_images)
         self._enabled_tool_names = {str(schema["name"]) for schema in tool_schemas}
         run_id, run_dir = _create_run(self.workspace, prompt, run_id, seed_workspace)
-        context = ToolContext(self.workspace, run_dir, run_dir / "workspace")
+        context = ToolContext(
+            self.workspace,
+            run_dir,
+            run_dir / "workspace",
+            new_reviewer=self.new_reviewer,
+            blender=self.blender,
+            textures=self.textures,
+        )
         record_path = run_dir / "record.json"
         try:
             return await self._run_created(
@@ -245,7 +268,7 @@ class Agent:
                 cost += _cost(summary_response)
                 summary_usage = _token_usage(summary_response)
                 token_usage = _add_token_usage(token_usage, summary_usage)
-                _save_cost(run_dir, cost, token_usage)
+                _save_cost(run_dir, cost, token_usage, context)
                 self.messages = plan.apply(self.messages, summary)
                 append_conversation(
                     conversation_path,
@@ -260,7 +283,7 @@ class Agent:
             cost += _cost(response)
             response_usage = _token_usage(response)
             token_usage = _add_token_usage(token_usage, response_usage)
-            _save_cost(run_dir, cost, token_usage)
+            _save_cost(run_dir, cost, token_usage, context)
             text = str(response.get("text") or "")
             tool_calls = list(response.get("tool_calls") or [])
             assistant = {
@@ -318,6 +341,9 @@ class Agent:
 
             consecutive_empty_responses = 0
             await self._run_tool_calls(context, tool_calls, conversation_path)
+            # A tool may have paid for a review, which the record should show
+            # even if this turn turns out to be the last one.
+            _save_cost(run_dir, cost, token_usage, context)
         else:
             hit_max_turns = True
 
@@ -641,10 +667,17 @@ def _result_path(run_dir: Path, compile_result: Mapping[str, Any] | None) -> str
         raise ValueError("compiled USDZ path must stay inside the run directory") from exc
 
 
-def _save_cost(run_dir: Path, cost: float, token_usage: dict[str, int]) -> None:
+def _save_cost(
+    run_dir: Path,
+    cost: float,
+    token_usage: dict[str, int],
+    context: ToolContext,
+) -> None:
+    """Persist what the run has spent, reviews the tools paid for included."""
+
     record = Record.load(run_dir / "record.json")
-    record.cost = round(cost, 8)
-    record.token_usage = dict(token_usage)
+    record.cost = round(cost + context.review_cost, 8)
+    record.token_usage = _add_token_usage(token_usage, context.review_token_usage)
     record.save(run_dir / "record.json")
 
 

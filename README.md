@@ -63,6 +63,25 @@ The new run starts from the finished run's code, so the agent edits a working
 object and goes through the same compile and check loop. The source run is left
 as it was, and the new run's `record.json` names it in `source_run`.
 
+## Add texture maps
+
+Materials carry a color, a finish, and a clear coat on their own. Add `--textures`
+when you also want captured PBR maps on the surfaces that name one:
+
+```shell
+uv run articraft "an oak kitchen cabinet" --textures
+```
+
+Every compile in the run then exports with texture maps, so the agent can judge a
+textured object rather than a flat one. The maps come from
+[ambientCG](https://ambientcg.com) and [Poly Haven](https://polyhaven.com), both
+CC0, and are cached after the first fetch. The agent searches them by tag and
+picks from the previews. A surface whose asset cannot be fetched keeps its
+authored color and roughness, and the compile says which one failed.
+
+`uv run articraft texture runs/<run-id>` adds maps to a run that finished without
+them.
+
 ## Use the Python API
 
 Call `generate()` when your program can wait for the complete result:

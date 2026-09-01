@@ -32,6 +32,13 @@ A scripted step can also be a callable `(ModelQuery) -> Response`, so the
 See `tests/test_agent_scenarios.py` for end-to-end examples (repair loops,
 repeat-failure guidance, allowances).
 
+The `critic` tool builds its own client per review, so each verdict is an
+independent judgement. Pass `new_reviewer=` a factory to answer it, and use
+`one_client(model)` when monkeypatching `create_model`, so a scripted model is
+never closed twice or asked to answer from the agent's script. Runs that ignore
+the critic get `UnusedModel`, which fails loudly if it is ever queried. See
+`tests/test_critic.py`.
+
 ## WarmEnvironment vs LocalWorkspace
 
 Both lanes run every compile in a worker subprocess with the same timeout,

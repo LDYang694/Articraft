@@ -260,6 +260,33 @@ def test_compile_report_classifies_contact_and_scale() -> None:
     assert signals[1]["group"] == "design"
 
 
+def test_compile_report_carries_appearance_warnings_with_their_own_advice() -> None:
+    """Appearance is design evidence, and the advice for it is not geometric."""
+
+    report = build_compile_report(
+        status="success",
+        test_report=TestReport(
+            passed=True,
+            checks_run=1,
+            checks=("warn_if_shapes_have_no_appearance()",),
+            failures=(),
+            warnings=(
+                "Appearance warning: 2 of 5 shapes have no material, so they export the "
+                "default gray:\n'base'/'body'\n'base'/'trim'",
+            ),
+        ),
+    )
+    signal = report["signal_bundle"]["signals"][0]
+
+    assert signal["kind"] == "appearance"
+    assert signal["code"] == "WARN_APPEARANCE"
+    assert signal["severity"] == "warning"
+    assert signal["group"] == "design"
+    assert signal["blocking"] is False
+    assert "'base'/'trim'" in signal["details"]
+    assert "Name a material for every visible surface" in report["signals_text"]
+
+
 def test_compile_failure_signature_and_rendering_are_stable() -> None:
     left = build_compile_report(
         status="failure",

@@ -162,6 +162,7 @@ def render_compile_signals(
         failures,
         has_warnings=bool(warnings),
         has_visuals=any(signal.kind == "qa_image" for signal in bundle.signals),
+        has_appearance=any(signal.kind == "appearance" for signal in bundle.signals),
         repeated=repeated,
         failure_streak=failure_streak,
     )
@@ -252,6 +253,16 @@ def _warning_signal(text: str) -> CompileSignal:
             "warning",
             "geometry_scale",
             "WARN_GEOMETRY_SCALE",
+            headline,
+            stripped,
+            source="compiler",
+            group="design",
+        )
+    if lower.startswith("appearance warning"):
+        return CompileSignal(
+            "warning",
+            "appearance",
+            "WARN_APPEARANCE",
             headline,
             stripped,
             source="compiler",
@@ -654,6 +665,7 @@ def _rules(
     *,
     has_warnings: bool,
     has_visuals: bool,
+    has_appearance: bool,
     repeated: bool,
     failure_streak: int,
 ) -> list[str]:
@@ -662,6 +674,12 @@ def _rules(
         if has_visuals:
             rules.append(
                 "- Open every relevant workspace image with `view_image` before you finish."
+            )
+        if has_appearance:
+            rules.append(
+                "- Appearance warnings are about what the object is made of, not its shape. "
+                "Name a material for every visible surface, and let parts that differ in "
+                "reality differ in tint and finish."
             )
         if has_warnings:
             rules.append(

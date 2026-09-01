@@ -147,6 +147,9 @@ def test_agent_writes_compiles_and_returns_final_response(tmp_path) -> None:
         "write",
         "exec_command",
         "write_stdin",
+        "sample_color",
+        "find_texture",
+        "critic",
         "compile",
     }
 
@@ -866,7 +869,7 @@ def test_agent_terminalizes_setup_exceptions(monkeypatch, tmp_path) -> None:
 def test_agent_terminalizes_unexpected_loop_exceptions(monkeypatch, tmp_path) -> None:
     model = ScriptedModel([text("working")])
 
-    def fail_cost_save(run_dir, cost, token_usage) -> None:
+    def fail_cost_save(run_dir, cost, token_usage, context) -> None:
         raise OSError("disk unavailable")
 
     monkeypatch.setattr("articraft.agent.harness._save_cost", fail_cost_save)

@@ -162,6 +162,7 @@ def _resolved_settings(
     effort: str | None = None,
     compile_timeout: float | None = None,
     physics: bool = False,
+    textures: bool = False,
 ) -> Settings:
     """Apply validated CLI or API overrides to ``base``."""
     if provider is not None and provider not in _PROVIDERS:
@@ -180,6 +181,7 @@ def _resolved_settings(
             # The CLI flag only turns the lane on; leaving it off preserves
             # the environment or .env setting.
             ("physics_enabled", True if physics else None),
+            ("textures_enabled", True if textures else None),
         )
         if value is not None
     }
@@ -229,9 +231,18 @@ async def _run_generation(
         output_dir=settings.output_dir,
         timeout_seconds=settings.compile_timeout_seconds,
         physics_enabled=settings.physics_enabled,
+        textures_enabled=settings.textures_enabled,
     )
     model_client = create_model(settings)
-    agent_kwargs: dict[str, Any] = {"max_turns": settings.max_turns}
+    # The critic builds a client per review. A provider that chains its requests
+    # keeps conversation state, so a shared one would splice reviews into the run
+    # and let each review see the last one's verdict.
+    agent_kwargs: dict[str, Any] = {
+        "max_turns": settings.max_turns,
+        "new_reviewer": lambda: create_model(settings),
+        "blender": settings.blender_path,
+        "textures": settings.textures_enabled,
+    }
     if on_event is not None:
         agent_kwargs["on_event"] = on_event
     return await Agent(model_client, workspace, **agent_kwargs).run(

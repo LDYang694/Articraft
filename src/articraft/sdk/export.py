@@ -6,14 +6,17 @@ import json
 import math
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
+from hashlib import sha1
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 import trimesh
 import xatlas
+from PIL import Image
 from pxr import (  # pyright: ignore[reportAttributeAccessIssue]
     Gf,
     Kind,
@@ -27,7 +30,7 @@ from pxr import (  # pyright: ignore[reportAttributeAccessIssue]
     UsdValidation,
 )
 
-from articraft.sdk import ambientcg
+from articraft.sdk import textures
 from articraft.sdk._mesh.core import MeshGeometry, geometry_to_trimesh
 from articraft.sdk.assembly import (
     WORLD,
@@ -39,7 +42,7 @@ from articraft.sdk.assembly import (
 )
 from articraft.sdk.bodies import Geometry, RigidBody
 from articraft.sdk.mass import ResolvedMass, resolve_mass
-from articraft.sdk.materials import Material, is_library_material
+from articraft.sdk.materials import Material, is_library_material, to_linear
 from articraft.sdk.physics import BodyState, PhysicsScene
 from articraft.sdk.testing import DEFAULT_MESH_TOLERANCE
 
@@ -81,15 +84,15 @@ class AssemblyExportResult:
 
 @dataclass
 class _TextureResolver:
-    resolved: dict[Material, ambientcg.TextureSet | None] = field(default_factory=dict)
+    resolved: dict[Material, textures.TextureSet | None] = field(default_factory=dict)
     errors: dict[Material, str] = field(default_factory=dict)
 
-    def resolve(self, kind: Material) -> ambientcg.TextureSet | None:
+    def resolve(self, kind: Material) -> textures.TextureSet | None:
         if kind.texture is None:
             return None
         if kind not in self.resolved:
             try:
-                self.resolved[kind] = ambientcg.fetch_material(kind)[0]
+                self.resolved[kind] = textures.fetch_material(kind)[0]
             except Exception as exc:
                 self.resolved[kind] = None
                 self.errors[kind] = f"{kind.name}: {type(exc).__name__}: {exc}"
@@ -343,7 +346,7 @@ def _write_body_geometry(
             if display is not None:
                 # displayColor stays as a fallback for renderers that ignore
                 # UsdShade; the bound UsdPreviewSurface carries the full surface.
-                mesh.CreateDisplayColorAttr([Gf.Vec3f(*display.base_color[:3])])
+                mesh.CreateDisplayColorAttr([Gf.Vec3f(*to_linear(display.base_color[:3]))])
                 mesh.CreateDisplayOpacityAttr([display.opacity])
                 _bind_shared_appearance(stage, mesh, display, appearances_path, shared_appearances)
                 _attrs(mesh.GetPrim(), _material_attrs(display))
@@ -374,6 +377,7 @@ def _write_textured_shape(
         trimesh_obj,
         _normal_crease_angle(shape.geometry),
     )
+    uvs = _placed_uvs(uvs, trimesh_obj, material)
     gf_points = [Gf.Vec3f(*point) for point in points.tolist()]
 
     mesh = UsdGeom.Mesh.Define(stage, mesh_path)
@@ -396,23 +400,13 @@ def _write_textured_shape(
         ]
     )
 
-    tint = material.base_color[:3]
-    mesh.CreateDisplayColorAttr([Gf.Vec3f(*tint)])
+    mesh.CreateDisplayColorAttr([Gf.Vec3f(*to_linear(material.base_color[:3]))])
     mesh.CreateDisplayOpacityAttr([material.opacity])
     _bind_textured_material(stage, mesh, material_path, texture_set, material, asset_dir)
     _attrs(mesh.GetPrim(), {"name": shape.name, **_substance_attrs(shape)})
     # The viewer keeps USDLoader's texture maps and layers the authored tint +
     # metalness on top (see viewer.html); these attrs carry that intent.
-    _attrs(
-        mesh.GetPrim(),
-        {
-            "material:metallic": material.metallic,
-            "material:roughness": material.roughness,
-            "material:baseColor": Gf.Vec3d(*tint),
-            "material:opacity": material.opacity,
-            "material:textured": 1.0,
-        },
-    )
+    _attrs(mesh.GetPrim(), {**_material_attrs(material), "material:textured": 1.0})
 
 
 def _unwrap_mesh(
@@ -437,6 +431,145 @@ def _unwrap_mesh(
     )
 
 
+def _placed_uvs(uvs: np.ndarray, trimesh_obj, material: Material) -> np.ndarray:
+    """Turn the texture and repeat it at its real size.
+
+    Rotation comes first, about the chart's own middle, so the turn does not
+    also slide the tile across the surface. xatlas packs a chart wherever it
+    fits, so the unit square's middle is not the shape's. Grain runs along a
+    board, and a rail cut from the same stock as a stile needs the quarter turn
+    between them. Without it every part of an object wears one grain direction.
+
+    Then the tiling. xatlas packs the whole shape into the unit square, so
+    without this a 2 m door and a 6 mm pin each wear one entire tile. The atlas
+    spans roughly the shape's largest extent, so that extent divided by the
+    material's tile size is how many times the tile should repeat. Both ends
+    are clamped: a very large count aliases into noise, and a very small one is
+    already a single flat sample.
+    """
+
+    placed = uvs
+    if material.texture_rotation:
+        cos, sin = math.cos(material.texture_rotation), math.sin(material.texture_rotation)
+        middle = placed.mean(axis=0)
+        centered = placed - middle
+        placed = (
+            np.column_stack(
+                (
+                    centered[:, 0] * cos - centered[:, 1] * sin,
+                    centered[:, 0] * sin + centered[:, 1] * cos,
+                )
+            )
+            + middle
+        )
+    if material.texture_scale is None:
+        return placed.astype(np.float32)
+    extent = float(np.max(np.ptp(np.asarray(trimesh_obj.vertices), axis=0)))
+    tiles = min(max(extent / material.texture_scale, 1.0 / 64.0), 64.0)
+    return (placed * tiles).astype(np.float32)
+
+
+@lru_cache(maxsize=128)
+def _map_mean(path: Path, mode: str, gamma: float) -> tuple[float, ...]:
+    """A texture map's average value per channel, in linear space.
+
+    A 16x16 resize is enough for an average, and keeps a 1K map cheap to read.
+    Color maps are sRGB encoded, so they are linearized first: averaging the
+    encoded values would report a color the renderer never sees.
+    """
+
+    with Image.open(path) as opened:
+        small = opened.convert(mode).resize((16, 16), Image.Resampling.BILINEAR)
+    values = np.asarray(small, dtype=np.float64) / 255.0
+    if gamma != 1.0:
+        values = values**gamma
+    if values.ndim == 2:
+        return (float(values.mean()),)
+    return tuple(float(value) for value in values.reshape(-1, values.shape[-1]).mean(axis=0))
+
+
+def _recolor_scale(
+    path: Path,
+    mode: str,
+    target: Sequence[float],
+    *,
+    gamma: float = 1.0,
+) -> tuple[float, ...]:
+    """What to multiply a scalar map by so its average lands on ``target``.
+
+    Used for roughness, where a channel is a number rather than a color and a
+    multiply is the whole story. Color goes through :func:`_recolored` instead.
+
+    A near-black map cannot be scaled up to a bright target without amplifying
+    its noise, so the factor is capped.
+    """
+
+    try:
+        means = _map_mean(path, mode, gamma)
+    except (OSError, ValueError):
+        return tuple(float(value) for value in target)
+    scales = []
+    for index, value in enumerate(target):
+        mean = means[index] if index < len(means) else means[0]
+        scales.append(min(float(value) / mean, 8.0) if mean > 1e-4 else float(value))
+    return tuple(scales)
+
+
+def _recolored(source: Path, asset_dir: Path, material: Material) -> str:
+    """Write a copy of the color map moved onto the authored color.
+
+    The authored color says what the surface is, not what to filter the asset
+    through, so the map's own average is replaced rather than multiplied. The
+    move happens in LAB and channel by channel: each pixel keeps its distance
+    from the map's mean, and only the mean travels.
+
+    A multiply cannot do this. Scaling to lift a dark oak onto a light one
+    stretches its bright end past white and flattens its dark end, so the grain
+    loses the contrast that made it read as grain. Translating leaves every
+    pixel's distance from the mean alone, which is what the pattern is.
+
+    ``pattern_strength`` scales those distances on the way through. One keeps
+    the asset's full variation, and lower values settle it toward flat color
+    for a surface that should read as painted rather than figured.
+    """
+
+    swatch = Image.new(
+        "RGB", (1, 1), tuple(round(value * 255) for value in material.base_color[:3])
+    )
+    target = _signed_lab(np.asarray(swatch.convert("LAB"), dtype=np.float64)).reshape(3)
+    key = f"{target.round().astype(int).tolist()}-{material.pattern_strength}"
+    destination = asset_dir / f"{source.stem}-{sha1(key.encode()).hexdigest()[:8]}.png"
+    if destination.exists():
+        return destination.name
+
+    with Image.open(source) as opened:
+        lab = _signed_lab(np.asarray(opened.convert("RGB").convert("LAB"), dtype=np.float64))
+    moved = target + material.pattern_strength * (lab - lab.mean(axis=(0, 1)))
+    Image.fromarray(_stored_lab(moved), mode="LAB").convert("RGB").save(destination)
+    return destination.name
+
+
+def _signed_lab(values: np.ndarray) -> np.ndarray:
+    """Undo the offset Pillow stores a and b with, so the arithmetic means something.
+
+    Pillow keeps LAB in three bytes: L from 0 to 255, and a and b signed but
+    stored unsigned, so an a of -1 arrives as 255. Averaging that raw put a
+    near-neutral dark metal's chroma on the far side of the color wheel, and
+    black handles exported green.
+    """
+
+    signed = values.copy()
+    signed[..., 1:] = (signed[..., 1:] + 128.0) % 256.0 - 128.0
+    return signed
+
+
+def _stored_lab(values: np.ndarray) -> np.ndarray:
+    stored = values.copy()
+    stored[..., 0] = np.clip(stored[..., 0], 0.0, 255.0)
+    stored[..., 1:] = np.clip(stored[..., 1:], -128.0, 127.0) % 256.0
+    return stored.astype(np.uint8)
+
+
 def _bind_textured_material(
     stage: Usd.Stage,
     mesh: UsdGeom.Mesh,
@@ -447,6 +580,9 @@ def _bind_textured_material(
 ) -> None:
     local: dict[str, str] = {}
     for channel, source in texture_set.maps().items():
+        if channel == "base_color":
+            local[channel] = _recolored(source, asset_dir, authored)
+            continue
         destination = asset_dir / source.name
         if not destination.exists():
             shutil.copyfile(source, destination)
@@ -456,6 +592,11 @@ def _bind_textured_material(
     surface = UsdShade.Shader.Define(stage, f"{material_path}/surface")
     surface.CreateIdAttr("UsdPreviewSurface")
     surface.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(0)
+    _write_coating_inputs(surface, authored)
+    if authored.emissive is not None:
+        surface.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*to_linear(authored.emissive))
+        )
 
     reader = UsdShade.Shader.Define(stage, f"{material_path}/stReader")
     reader.CreateIdAttr("UsdPrimvarReader_float2")
@@ -472,10 +613,9 @@ def _bind_textured_material(
         node.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(colorspace)
         return node
 
+    # The map already carries the authored color, moved onto it in LAB, so
+    # there is nothing left for the shader to scale.
     diffuse = texture("diffuseTex", local["base_color"], "sRGB")
-    diffuse.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(
-        Gf.Vec4f(*authored.base_color)  # pyright: ignore[reportAttributeAccessIssue]
-    )
     surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
         diffuse.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
     )
@@ -483,8 +623,9 @@ def _bind_textured_material(
         surface.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(authored.opacity)
     if "roughness" in local:
         rough = texture("roughTex", local["roughness"], "raw")
+        rough_scale = _recolor_scale(texture_set.maps()["roughness"], "L", (authored.roughness,))[0]
         rough.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(
-            Gf.Vec4f(*([authored.roughness] * 4))  # pyright: ignore[reportAttributeAccessIssue]
+            Gf.Vec4f(*([rough_scale] * 4))  # pyright: ignore[reportAttributeAccessIssue]
         )
         surface.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(
             rough.CreateOutput("r", Sdf.ValueTypeNames.Float)
@@ -499,6 +640,11 @@ def _bind_textured_material(
         )
         surface.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(
             normal.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        )
+    if "occlusion" in local:
+        occlusion = texture("occlusionTex", local["occlusion"], "raw")
+        surface.CreateInput("occlusion", Sdf.ValueTypeNames.Float).ConnectToSource(
+            occlusion.CreateOutput("r", Sdf.ValueTypeNames.Float)
         )
     if authored.metallic > 0.0 and "metalness" in local:
         metal = texture("metalTex", local["metalness"], "raw")
@@ -543,19 +689,38 @@ def _bind_material(
     usd_material = UsdShade.Material.Define(stage, material_path)
     shader = UsdShade.Shader.Define(stage, f"{material_path}/surface")
     shader.CreateIdAttr("UsdPreviewSurface")
-    red, green, blue, alpha = material.base_color
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(red, green, blue))
+    alpha = material.opacity
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(*to_linear(material.base_color[:3]))
+    )
     shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(material.metallic)
     shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(material.roughness)
     shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(0)
+    _write_coating_inputs(shader, material)
     if alpha < 1.0:
         shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(alpha)
     if material.emissive is not None:
         shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(
-            Gf.Vec3f(*material.emissive)
+            Gf.Vec3f(*to_linear(material.emissive))
         )
     usd_material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(usd_material)
+
+
+def _write_coating_inputs(shader: UsdShade.Shader, material: Material) -> None:
+    """Author the clear layer and refraction, which both paths share.
+
+    A clearcoat of zero is the default, so writing it only when present keeps
+    the shader graph of a plain surface as small as it was.
+    """
+
+    if material.clearcoat > 0.0:
+        shader.CreateInput("clearcoat", Sdf.ValueTypeNames.Float).Set(material.clearcoat)
+        shader.CreateInput("clearcoatRoughness", Sdf.ValueTypeNames.Float).Set(
+            material.clearcoat_roughness
+        )
+    if material.ior is not None:
+        shader.CreateInput("ior", Sdf.ValueTypeNames.Float).Set(material.ior)
 
 
 def _substance_attrs(shape) -> dict[str, object]:
@@ -577,6 +742,11 @@ def _material_attrs(material: Material) -> dict[str, object]:
         "material:baseColor": Gf.Vec3d(red, green, blue),
         "material:opacity": alpha,
     }
+    if material.clearcoat > 0.0:
+        values["material:clearcoat"] = material.clearcoat
+        values["material:clearcoatRoughness"] = material.clearcoat_roughness
+    if material.ior is not None:
+        values["material:ior"] = material.ior
     if material.emissive is not None:
         values["material:emissive"] = Gf.Vec3d(*material.emissive)
     return values
@@ -1000,10 +1170,17 @@ def _material_payload(material: Material | None) -> dict[str, object] | None:
         "base_color": list(material.base_color),
         "metallic": material.metallic,
         "roughness": material.roughness,
+        "clearcoat": material.clearcoat,
+        "clearcoat_roughness": material.clearcoat_roughness,
+        "ior": material.ior,
         # The viewer reads opacity directly; without it, alpha in base_color was
         # silently ignored and glass rendered solid.
         "opacity": material.opacity,
         "emissive": list(material.emissive) if material.emissive is not None else None,
+        "texture": material.texture,
+        "texture_scale": material.texture_scale,
+        "texture_rotation": material.texture_rotation,
+        "pattern_strength": material.pattern_strength,
     }
 
 

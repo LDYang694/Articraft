@@ -15,11 +15,20 @@ from articraft.sdk._mesh.core import geometry_to_trimesh
 from articraft.sdk.assembly import WORLD, Joint, JointAxis, RigidBodyAssembly, _frame_matrix
 from articraft.sdk.bodies import RigidBody
 from articraft.sdk.errors import ValidationError
+from articraft.sdk.materials import Material, to_linear
 from articraft.sdk.testing import DEFAULT_MESH_TOLERANCE, PoseSample
 
 Vec3: TypeAlias = tuple[float, float, float]
 ColorMode: TypeAlias = Literal["part", "shape", "material"]
 Projection: TypeAlias = Literal["orthographic", "perspective"]
+
+# A two-light rig plus a constant ambient term. The key light is where the old
+# single light was, so views keep roughly the same orientation as before.
+_KEY_LIGHT: Vec3 = (0.4, -0.5, 1.0)
+_FILL_LIGHT: Vec3 = (-0.7, -0.3, 0.35)
+_KEY_STRENGTH = 0.72
+_FILL_STRENGTH = 0.22
+_AMBIENT_STRENGTH = 0.10
 
 
 @dataclass(frozen=True)
@@ -165,11 +174,32 @@ VisualSpec: TypeAlias = ModelView | SectionView | MeridionalSectionView | Motion
 
 
 @dataclass(frozen=True)
+class _Surface:
+    """How a shape responds to light, taken from its material.
+
+    Separate from the shape's flat ``color`` because ``color_by`` decides which
+    color a preview paints, while the light response always belongs to the
+    material the shape is made of.
+    """
+
+    metallic: float = 0.0
+    roughness: float = 0.6
+    clearcoat: float = 0.0
+    clearcoat_roughness: float = 0.1
+    emissive: Vec3 | None = None
+    opacity: float = 1.0
+
+
+_DEFAULT_SURFACE = _Surface()
+
+
+@dataclass(frozen=True)
 class _RenderMesh:
     part: str
     shape: str
     mesh: trimesh.Trimesh
     color: tuple[int, int, int]
+    surface: _Surface = _DEFAULT_SURFACE
 
 
 def annotate_image(
@@ -261,7 +291,9 @@ def _render_model(
     depth_buffer = np.full((view.height, view.width), np.inf, dtype=np.float64)
 
     vertex_offset = 0
-    light = _normalize((0.4, -0.5, 1.0), "light")
+    view_direction = -forward
+    opaque: list[tuple[np.ndarray, np.ndarray]] = []
+    translucent: list[tuple[np.ndarray, np.ndarray, float]] = []
     for item in meshes:
         mesh_vertices = np.asarray(item.mesh.vertices)
         count = len(mesh_vertices)
@@ -278,15 +310,27 @@ def _render_model(
         lengths = np.linalg.norm(normals, axis=1)
         valid = lengths > 1e-14
         normals[valid] /= lengths[valid, None]
-        shades = 0.42 + 0.58 * np.abs(normals @ light)
-        for triangle, shade, is_valid in zip(triangles, shades, valid, strict=True):
-            if not is_valid:
-                continue
-            color = cast(
-                tuple[int, int, int],
-                tuple(int(np.clip(channel * float(shade), 0, 255)) for channel in item.color),
-            )
+        colors = _shade_faces(normals, view_direction, item.color, item.surface)
+        if item.surface.opacity >= 1.0:
+            opaque.append((triangles[valid], colors[valid]))
+        else:
+            translucent.append((triangles[valid], colors[valid], item.surface.opacity))
+
+    for shape_triangles, shape_colors in opaque:
+        for triangle, color in zip(shape_triangles, shape_colors, strict=True):
             _raster_triangle(image_array, depth_buffer, triangle, color)
+    # Translucent faces blend into whatever is already there, so they go last
+    # and back to front. They read depth but do not write it, which keeps a
+    # pane from hiding the parts behind it.
+    for shape_triangles, shape_colors, opacity in translucent:
+        for index in np.argsort(-shape_triangles[:, :, 2].mean(axis=1)):
+            _raster_triangle(
+                image_array,
+                depth_buffer,
+                shape_triangles[index],
+                shape_colors[index],
+                alpha=opacity,
+            )
 
     image = Image.fromarray(image_array, mode="RGB")
     draw = ImageDraw.Draw(image)
@@ -479,16 +523,14 @@ def _world_meshes(
             mesh = geometry_to_trimesh(shape.geometry, mesh_tolerance).copy()
             mesh.apply_transform(transforms[part.name])
             appearance = shape.display_material
+            surface = _DEFAULT_SURFACE if appearance is None else _surface_of(appearance)
             if color_by == "material" and appearance is not None:
-                color = cast(
-                    tuple[int, int, int],
-                    tuple(round(value * 255) for value in appearance.base_color[:3]),
-                )
+                color = _material_color(appearance)
             elif color_by == "shape":
                 color = _stable_color(f"{part.name}/{shape.name}")
             else:
                 color = _stable_color(part.name)
-            rendered.append(_RenderMesh(part.name, shape.name, mesh, color))
+            rendered.append(_RenderMesh(part.name, shape.name, mesh, color, surface))
     if not rendered:
         raise ValidationError("visual selection did not match any geometry")
     return rendered
@@ -523,11 +565,61 @@ def _project_points(
     return np.column_stack((x * focal / depth, y * focal / depth, depth))
 
 
+def _shade_faces(
+    normals: np.ndarray,
+    view_direction: np.ndarray,
+    color: tuple[int, int, int],
+    surface: _Surface,
+) -> np.ndarray:
+    """Shade each face from the material's light response.
+
+    Not a physically based renderer, and deliberately not trying to be: enough
+    of one that roughness, metallic, clearcoat, and emissive become visible
+    differences instead of invisible numbers. Metals get a constant environment
+    reflection term because there is no environment map to reflect, and without
+    it a metal surface would be black everywhere the highlight misses.
+
+    Dot products are absolute, as they were in the flat renderer, so a face
+    whose winding points away still shades rather than going black.
+    """
+
+    albedo = np.asarray(to_linear(component / 255.0 for component in color), dtype=np.float64)
+    gloss = (1.0 - surface.roughness) ** 2
+    shininess = 4.0 + 250.0 * gloss
+    coat_gloss = (1.0 - surface.clearcoat_roughness) ** 2
+    coat_shininess = 8.0 + 400.0 * coat_gloss
+
+    diffuse = np.full(len(normals), _AMBIENT_STRENGTH)
+    specular = np.zeros(len(normals))
+    for direction, strength in ((_KEY_LIGHT, _KEY_STRENGTH), (_FILL_LIGHT, _FILL_STRENGTH)):
+        light = _normalize(direction, "light")
+        diffuse += strength * np.abs(normals @ light)
+        highlight = np.abs(normals @ _unit(light + view_direction))
+        specular += strength * (0.35 + 0.65 * gloss) * highlight**shininess
+        if surface.clearcoat > 0.0:
+            specular += strength * surface.clearcoat * 0.5 * highlight**coat_shininess
+
+    reflectance = 0.04 + 0.96 * surface.metallic
+    environment = 0.18 + 0.22 * gloss
+    tint = albedo * surface.metallic + (1.0 - surface.metallic)
+    shaded = albedo * (1.0 - surface.metallic) * diffuse[:, None]
+    shaded = shaded + tint * (reflectance * (specular + environment))[:, None]
+    if surface.emissive is not None:
+        shaded = shaded + np.asarray(to_linear(surface.emissive), dtype=np.float64)
+    # Back to display. Colors come in encoded and are linearized above, shading
+    # keeps them linear, and writing those numbers straight into a PNG would
+    # report a surface far darker than the one that was authored.
+    display = np.clip(shaded, 0.0, 1.0) ** (1.0 / 2.2)
+    return (display * 255.0).astype(np.uint8)
+
+
 def _raster_triangle(
     image: np.ndarray,
     depth_buffer: np.ndarray,
     triangle: np.ndarray,
-    color: tuple[int, int, int],
+    color: np.ndarray,
+    *,
+    alpha: float = 1.0,
 ) -> None:
     height, width = depth_buffer.shape
     minimum = np.floor(triangle[:, :2].min(axis=0)).astype(int)
@@ -552,9 +644,13 @@ def _raster_triangle(
     depth = wa * a[2] + wb * b[2] + wc * c[2]
     current = depth_buffer[y0 : y1 + 1, x0 : x1 + 1]
     update = inside & (depth < current)
-    current[update] = depth[update]
     region = image[y0 : y1 + 1, x0 : x1 + 1]
-    region[update] = color
+    if alpha >= 1.0:
+        current[update] = depth[update]
+        region[update] = color
+        return
+    blended = region[update] * (1.0 - alpha) + color * alpha
+    region[update] = blended.astype(np.uint8)
 
 
 def _fit_projection(
@@ -764,6 +860,31 @@ def _stable_color(name: str) -> tuple[int, int, int]:
     return cast(tuple[int, int, int], tuple(75 + int(value) % 145 for value in digest[:3]))
 
 
+def _surface_of(material: Material) -> _Surface:
+    """The material's light response.
+
+    The authored numbers are used as they are, because export recolors a
+    texture set so its averages match them. A preview cannot show the grain a
+    texture adds, but the color and finish it shades with are the ones the
+    exported USDZ will average out to.
+    """
+
+    return _Surface(
+        metallic=material.metallic,
+        roughness=material.roughness,
+        clearcoat=material.clearcoat,
+        clearcoat_roughness=material.clearcoat_roughness,
+        emissive=material.emissive,
+        opacity=material.opacity,
+    )
+
+
+def _material_color(material: Material) -> tuple[int, int, int]:
+    return cast(
+        tuple[int, int, int], tuple(round(value * 255) for value in material.base_color[:3])
+    )
+
+
 def _normalize(value: Vec3 | np.ndarray, name: str) -> np.ndarray:
     array = np.asarray(value, dtype=np.float64)
     if array.shape != (3,) or not np.all(np.isfinite(array)):
@@ -772,6 +893,13 @@ def _normalize(value: Vec3 | np.ndarray, name: str) -> np.ndarray:
     if length <= 0.0:
         raise ValidationError(f"{name} must be non-zero")
     return array / length
+
+
+def _unit(value: np.ndarray) -> np.ndarray:
+    """Normalize a vector that shading built, where a zero length is harmless."""
+
+    length = float(np.linalg.norm(value))
+    return value if length <= 1e-12 else value / length
 
 
 def _validate_size(width: int, height: int) -> None:

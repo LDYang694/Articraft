@@ -1436,6 +1436,43 @@ class TestContext:
             self.warn("Scale warning:\n" + "\n".join(warnings[:10]))
         return self._record(check_name, True)
 
+    def warn_if_shapes_have_no_appearance(self, *, name: str | None = None) -> bool:
+        """Report visible surfaces that never say what they are made of.
+
+        A shape with no material exports the renderer's default gray, and a
+        whole object left on one library color reads as a study model rather
+        than the thing itself. Neither is a failure -- appearance is a design
+        judgement, not a build error -- but both are worth naming, because they
+        are invisible in a preview that colors by part.
+        """
+
+        check_name = name or "warn_if_shapes_have_no_appearance()"
+        bare: list[str] = []
+        colors: set[tuple[float, ...]] = set()
+        total = 0
+        for part in self.model.rigid_bodies:
+            for shape in part._iter_shapes():
+                total += 1
+                appearance = shape.display_material
+                if appearance is None:
+                    bare.append(f"{part.name!r}/{shape.name!r}")
+                    continue
+                colors.add(appearance.base_color)
+        if bare:
+            self.warn(
+                f"Appearance warning: {len(bare)} of {total} shapes have no material, "
+                "so they export the default gray:\n" + "\n".join(bare[:10])
+            )
+        if total > 3 and len(colors) == 1 and not bare:
+            only = next(iter(colors))
+            self.warn(
+                f"Appearance warning: all {total} shapes share one color "
+                f"{tuple(round(value, 3) for value in only)}. Real objects differ between "
+                "their parts, in tint as well as in finish."
+            )
+        self.record_metric("shapes without material", float(len(bare)), unit="shapes")
+        return self._record(check_name, True)
+
     def fail_if_parts_overlap_in_current_pose(
         self,
         *,

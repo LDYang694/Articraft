@@ -11,7 +11,7 @@ named shapes, dimensions, and checks the request actually concerns.
 Make the requested change and nothing else. Keep every other part, material,
 joint, limit, and dimension as it stands, and leave the structure and naming of
 code you were not asked to touch alone. Reuse the constants and helpers the
-script already defines. Meet the four quality requirements from the system
+script already defines. Meet the five quality requirements from the system
 prompt for the geometry you change, and read the SDK references you need for the
 new form when the current approach does not extend to it.
 
@@ -28,7 +28,9 @@ unchanged.
 <image_prompt>
 Re-run `previews.py` when the workspace has one, and view every image the change
 affects before you compile. A preview built from the old geometry is not
-evidence about the new geometry.
+evidence about the new geometry. When the request concerns what a surface is
+made of, compile first and judge the change with `critic`, which path-traces the
+exported USDZ; a rasterized preview cannot show a texture or a real reflection.
 </image_prompt>
 Run `compile` and treat every signal as design evidence. Then return a short
 visible summary of what changed and what it means for the object.

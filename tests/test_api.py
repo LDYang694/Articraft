@@ -8,7 +8,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from harness import GOOD_MAIN_PY, ScriptedModel, WarmEnvironment, calls, run, text, tool_call
+from harness import (
+    GOOD_MAIN_PY,
+    ScriptedModel,
+    WarmEnvironment,
+    calls,
+    one_client,
+    run,
+    text,
+    tool_call,
+)
 from pydantic import ValidationError
 
 import articraft
@@ -105,6 +114,7 @@ def test_generate_routes_inputs_and_returns_typed_paths(monkeypatch, tmp_path: P
 
     class FakeAgent:
         def __init__(self, model: Any, env: Any, **kwargs: Any):
+            captured["model"] = model
             captured["agent_kwargs"] = kwargs
 
         async def run(
@@ -165,9 +175,15 @@ def test_generate_routes_inputs_and_returns_typed_paths(monkeypatch, tmp_path: P
         "output_dir": tmp_path / "runs",
         "timeout_seconds": captured["settings"].compile_timeout_seconds,
         "physics_enabled": False,
+        "textures_enabled": False,
     }
     assert captured["agent_kwargs"]["max_turns"] == 100
     assert captured["agent_kwargs"]["on_event"] == seen.append
+    # The critic must not share the run's client: a chained provider would put
+    # the review into the run's own conversation. Each review builds its own.
+    new_reviewer = captured["agent_kwargs"]["new_reviewer"]
+    assert new_reviewer() is not captured["model"]
+    assert new_reviewer() is not new_reviewer()
     assert captured["prompt"] == "a fan"
     assert captured["image_path"] == image
 
@@ -179,7 +195,7 @@ def test_generate_end_to_end_with_scripted_model(monkeypatch, tmp_path: Path) ->
         text("done"),
     ]
     model = ScriptedModel(script)
-    monkeypatch.setattr(api, "create_model", lambda settings: model)
+    monkeypatch.setattr(api, "create_model", one_client(model))
     monkeypatch.setattr(api, "LocalWorkspace", WarmEnvironment)
     monkeypatch.setattr(api, "get_settings", lambda: Settings(openai_api_key="sk-test"))
     seen: list[events.Event] = []
@@ -319,7 +335,7 @@ def _hanging_model_step(query: Any) -> Any:
 
 def test_generate_async_uses_native_task_cancellation(monkeypatch, tmp_path: Path) -> None:
     model = ScriptedModel([_hanging_model_step])
-    monkeypatch.setattr(api, "create_model", lambda settings: model)
+    monkeypatch.setattr(api, "create_model", one_client(model))
     monkeypatch.setattr(api, "LocalWorkspace", WarmEnvironment)
     monkeypatch.setattr(api, "get_settings", lambda: Settings(openai_api_key="sk-test"))
 
@@ -371,7 +387,7 @@ def test_generate_async_finishes_active_compile_before_cancelling(
                 raise RuntimeError("compile failed during cancellation")
             return super().compile_path(run_dir)
 
-    monkeypatch.setattr(api, "create_model", lambda settings: model)
+    monkeypatch.setattr(api, "create_model", one_client(model))
     monkeypatch.setattr(api, "LocalWorkspace", BlockingEnvironment)
     monkeypatch.setattr(api, "get_settings", lambda: Settings(openai_api_key="sk-test"))
 

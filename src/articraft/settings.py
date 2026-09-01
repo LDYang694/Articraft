@@ -129,6 +129,14 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="ARTICRAFT_PHYSICS",
     )
+    textures_enabled: bool = Field(
+        default=False,
+        validation_alias="ARTICRAFT_TEXTURES",
+    )
+    blender_path: str | None = Field(
+        default=None,
+        validation_alias="ARTICRAFT_BLENDER",
+    )
     compile_timeout_seconds: float = Field(
         default=DEFAULT_COMPILE_TIMEOUT_SECONDS,
         gt=0.0,

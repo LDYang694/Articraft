@@ -112,9 +112,10 @@ root = "scripts"
 extraPaths = ["tests"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not volume'"
+addopts = "-m 'not volume and not blender'"
 markers = [
     "volume: opt-in load/concurrency stress tests (run with `-m volume`)",
+    "blender: opt-in tests that shell out to Blender (run with `-m blender`)",
 ]
 
 [tool.ruff]

@@ -27,6 +27,7 @@ class LocalWorkspaceConfig(BaseModel):
     output_dir: Path = DEFAULT_OUTPUT_DIR
     timeout_seconds: float = Field(default=DEFAULT_COMPILE_TIMEOUT_SECONDS, gt=0.0)
     physics_enabled: bool = False
+    textures_enabled: bool = False
 
 
 DEFAULT_MAIN_PY = """from build123d import Box
@@ -103,6 +104,8 @@ class LocalWorkspace:
         ]
         if self.config.physics_enabled:
             args.append("--physics")
+        if self.config.textures_enabled:
+            args.append("--textures")
         completed = _run_isolated_process(
             args,
             cwd=run_dir.resolve(),

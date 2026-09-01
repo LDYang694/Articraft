@@ -60,7 +60,7 @@ def generate(
     textures: bool = typer.Option(
         False,
         "--textures",
-        help="Apply texture maps to the generated result.",
+        help="Give textured materials their texture maps in every compile.",
     ),
     physics: bool = typer.Option(
         False,
@@ -72,7 +72,7 @@ def generate(
     if image is not None and not image.exists():
         typer.echo(f"reference image does not exist: {image}", err=True)
         raise typer.Exit(2)
-    settings = _settings(provider, model, output_dir, effort, compile_timeout, physics)
+    settings = _settings(provider, model, output_dir, effort, compile_timeout, physics, textures)
     if image is not None and settings.provider == "openrouter":
         typer.echo("OpenRouter does not support reference images.", err=True)
         raise typer.Exit(1)
@@ -84,8 +84,6 @@ def generate(
             image,
             use_tui=use_tui,
         )
-        if textures:
-            _apply_textures(result)
         if not use_tui:
             _print_result(result)
     except (OSError, ValueError) as exc:
@@ -136,7 +134,7 @@ def edit(
     textures: bool = typer.Option(
         False,
         "--textures",
-        help="Apply texture maps to the edited result.",
+        help="Give textured materials their texture maps in every compile.",
     ),
     physics: bool = typer.Option(
         False,
@@ -159,7 +157,7 @@ def edit(
     if not (seed_workspace / "main.py").is_file():
         typer.echo(f"no generated run at {source_dir}", err=True)
         raise typer.Exit(1)
-    settings = _settings(provider, model, output_dir, effort, compile_timeout, physics)
+    settings = _settings(provider, model, output_dir, effort, compile_timeout, physics, textures)
     if image is not None and settings.provider == "openrouter":
         typer.echo("OpenRouter does not support reference images.", err=True)
         raise typer.Exit(1)
@@ -172,8 +170,6 @@ def edit(
             use_tui=use_tui,
             seed_workspace=seed_workspace,
         )
-        if textures:
-            _apply_textures(result)
         if not use_tui:
             _print_result(result)
     except (OSError, ValueError) as exc:
@@ -344,33 +340,6 @@ def _generate_with_tui(
     return result
 
 
-def _apply_textures(result: dict[str, Any]) -> None:
-    """Re-export a completed run with texture maps when available.
-
-    A failure keeps the parametric result and does not change generation status.
-    """
-
-    if str(result.get("status")) != "success":
-        return
-    run = result.get("run")
-    if not run:
-        return
-    outcome = texture_run(Path(str(run)))
-    if outcome.applied:
-        if outcome.usdz is not None:
-            run_dir = Path(str(run)).resolve()
-            result["result"] = outcome.usdz.relative_to(run_dir).as_posix()
-            _point_record_at(run_dir, outcome.usdz)
-        typer.echo(
-            f"applied texture maps to {outcome.textured_shapes}/{outcome.requested_shapes} surfaces"
-        )
-        for error in outcome.errors:
-            typer.echo(f"note: {error}", err=True)
-    else:
-        detail = outcome.error or "; ".join(outcome.errors) or "no textures were requested"
-        typer.echo(f"note: kept parametric result ({detail})", err=True)
-
-
 def _point_record_at(run_dir: Path, usdz: Path) -> None:
     """Aim the run's record at a newly exported usdz.
 
@@ -413,6 +382,7 @@ def _settings(
     effort: str | None,
     compile_timeout: float | None,
     physics: bool = False,
+    textures: bool = False,
 ) -> Settings:
     try:
         settings = get_settings()
@@ -429,6 +399,7 @@ def _settings(
             effort=effort,
             compile_timeout=compile_timeout,
             physics=physics,
+            textures=textures,
         )
     except ValueError as exc:
         print_settings_error(detail=str(exc))

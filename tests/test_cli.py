@@ -8,7 +8,6 @@ from typer.testing import CliRunner
 
 from articraft import api, app
 from articraft.agent.record import Record, append_conversation
-from articraft.compiler.worker import TextureRunResult
 from articraft.settings import Settings, get_settings
 
 
@@ -117,8 +116,12 @@ def test_cli_runs_agent_with_only_core_overrides(monkeypatch, tmp_path: Path) ->
         "output_dir": output_dir,
         "timeout_seconds": 45,
         "physics_enabled": False,
+        "textures_enabled": False,
     }
-    assert FakeAgent.instances[0].kwargs == {"max_turns": 123}
+    assert FakeAgent.instances[0].kwargs["max_turns"] == 123
+    # The critic answers through its own client, never the run's.
+    new_reviewer = FakeAgent.instances[0].kwargs["new_reviewer"]
+    assert new_reviewer() is not FakeOpenAIModel.instances[0]
     assert FakeAgent.instances[0].prompt == "make a hinge"
     assert FakeAgent.instances[0].image_path is None
 
@@ -140,81 +143,35 @@ def test_cli_physics_flag_enables_the_physics_lane(monkeypatch, tmp_path: Path) 
     assert FakeEnvironment.instances[0].kwargs["physics_enabled"] is True
 
 
-def test_cli_applies_textures_only_after_generation(monkeypatch) -> None:
+def test_cli_textures_flag_reaches_every_compile(monkeypatch, tmp_path: Path) -> None:
+    """Textures belong to the loop, not to a pass after it.
+
+    The agent can only judge a textured surface if the compile it runs produces
+    one, so the flag has to arrive at the workspace that drives the compiles.
+    """
+
     reset_fakes()
     monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
     monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
     monkeypatch.setattr(api, "Agent", FakeAgent)
     monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
-    applied: list[dict[str, Any]] = []
-    monkeypatch.setattr(app, "_apply_textures", applied.append)
 
     result = CliRunner().invoke(
         app.cli,
-        ["generate", "make a steel ball", "--textures", "--no-tui"],
+        [
+            "generate",
+            "make a steel ball",
+            "--output-dir",
+            str(tmp_path / "runs"),
+            "--textures",
+            "--no-tui",
+        ],
     )
 
     assert result.exit_code == 0
-    assert FakeAgent.instances[0].kwargs == {"max_turns": 100}
     assert FakeAgent.instances[0].prompt == "make a steel ball"
-    assert applied == [FakeAgent.result]
-
-
-def test_texture_flag_is_postprocessing_after_tui_generation(monkeypatch) -> None:
-    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
-    calls: list[tuple[str, object]] = []
-    generated = {"status": "success", "run": "/tmp/run"}
-
-    def run_generation(_settings, _prompt, _image, *, use_tui):
-        calls.append(("generate", use_tui))
-        return generated
-
-    def apply_textures(result):
-        calls.append(("textures", result))
-
-    monkeypatch.setattr(app, "_run_generation", run_generation)
-    monkeypatch.setattr(app, "_apply_textures", apply_textures)
-
-    result = CliRunner().invoke(
-        app.cli,
-        ["generate", "make a steel ball", "--textures", "--tui"],
-    )
-
-    assert result.exit_code == 0
-    assert calls == [("generate", True), ("textures", generated)]
-
-
-def test_apply_textures_updates_the_reported_result_path(monkeypatch, tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    final_usdz = run_dir / "result" / "usdz" / "0003.usdz"
-    monkeypatch.setattr(
-        app,
-        "texture_run",
-        lambda _run: TextureRunResult(
-            succeeded=True,
-            requested_shapes=1,
-            textured_shapes=1,
-            usdz=final_usdz,
-        ),
-    )
-    result: dict[str, Any] = {
-        "status": "success",
-        "run": str(run_dir),
-        "result": "result/usdz/0002.usdz",
-    }
-
-    app._apply_textures(result)
-
-    assert result["result"] == "result/usdz/0003.usdz"
-
-
-def test_apply_textures_ignores_failed_generation(monkeypatch) -> None:
-    def unexpected_texture_run(_run):
-        raise AssertionError("failed generation must not start texture postprocessing")
-
-    monkeypatch.setattr(app, "texture_run", unexpected_texture_run)
-
-    app._apply_textures({"status": "error", "run": "/tmp/run"})
+    assert FakeOpenAIModel.instances[0].settings.textures_enabled is True
+    assert FakeEnvironment.instances[0].kwargs["textures_enabled"] is True
 
 
 def test_cli_passes_reference_image_to_agent(monkeypatch, tmp_path: Path) -> None:

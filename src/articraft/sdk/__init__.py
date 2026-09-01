@@ -15,8 +15,8 @@ Six threads run through this package:
 - **physics and appearance** -- what a shape is made of. Both live on one
   ``Material`` in ``materials``, deliberately: density, friction and
   restitution alongside colour, metallic and roughness. ``mass`` measures a
-  part from those densities and lets you override the result; ``ambientcg``
-  fetches texture sets.
+  part from those densities and lets you override the result; ``textures``
+  fetches texture sets from ambientCG and Poly Haven.
 - **verify** -- checking the result. ``testing`` provides ``TestContext``,
   which the authored ``run_tests()`` uses.
 - **inspect** -- seeing the result. ``visual`` renders views for the author to

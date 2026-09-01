@@ -22,7 +22,7 @@ from articraft.sdk import (
     TestMetric,
     TestReport,
 )
-from articraft.sdk.export import export_assembly
+from articraft.sdk.export import TextureExportReport, export_assembly
 
 T = TypeVar("T", bound=Hashable)
 _COMPILE_PROGRESS_FILE = ".compile-progress.json"
@@ -82,13 +82,21 @@ class _CompileTracker:
 
 
 def compile_run(
-    run_dir: Path, *, include_report: bool = True, physics_enabled: bool = False
+    run_dir: Path,
+    *,
+    include_report: bool = True,
+    physics_enabled: bool = False,
+    textures_enabled: bool = False,
 ) -> CompilePayload:
     workspace = run_dir / "workspace"
     result_dir = run_dir / "result"
     tracker = _CompileTracker(result_dir / _COMPILE_PROGRESS_FILE)
     result = _compile_workspace(
-        workspace, result_dir, tracker=tracker, physics_enabled=physics_enabled
+        workspace,
+        result_dir,
+        tracker=tracker,
+        physics_enabled=physics_enabled,
+        textures_enabled=textures_enabled,
     )
     result.compile_stats = tracker.finish()
     tracker.remove()
@@ -176,6 +184,7 @@ def _compile_workspace(
     *,
     tracker: _CompileTracker,
     physics_enabled: bool = False,
+    textures_enabled: bool = False,
 ) -> CompileResult:
     export_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,7 +220,7 @@ def _compile_workspace(
                 compiler_failure_names={failure.name for failure in baseline_report.failures},
             )
             with tracker.phase("exporting and validating the USDZ file"):
-                export_result = export_assembly(object_model, export_dir)
+                export_result = export_assembly(object_model, export_dir, textured=textures_enabled)
             result.manifest = str(export_result.manifest)
             result.usdz = str(export_result.usdz)
             audit = export_result.audit
@@ -229,10 +238,18 @@ def _compile_workspace(
                     float(audit.meshes_with_normals),
                     unit="meshes",
                 ),
+                TestMetric(
+                    "export material bindings",
+                    float(audit.material_bindings),
+                    unit="surfaces",
+                ),
             )
             test_report = replace(
                 test_report,
                 metrics=(*test_report.metrics, *audit_metrics),
+                warnings=_ordered_unique(
+                    [*test_report.warnings, *_texture_warnings(export_result.textures)]
+                ),
             )
             result.test_report = _serialize_test_report(
                 test_report,
@@ -320,6 +337,8 @@ def _run_baseline_tests(
         ctx.warn_if_part_contains_disconnected_geometry_islands()
     with tracker.phase("checking the model scale"):
         ctx.warn_if_absurd_dimensions()
+    with tracker.phase("checking surface appearance"):
+        ctx.warn_if_shapes_have_no_appearance()
     with tracker.phase("checking for part overlaps"):
         ctx.fail_if_parts_overlap_in_current_pose()
     with tracker.phase("checking articulation motion"):
@@ -346,6 +365,23 @@ def _run_baseline_tests(
         failures=blocking,
         warnings=_ordered_unique([*report.warnings, *diagnostic_warnings]),
     )
+
+
+def _texture_warnings(report: TextureExportReport) -> list[str]:
+    """What the agent needs to know about texture maps it asked for.
+
+    A texture that cannot be fetched is not a build error: the surface keeps its
+    authored numbers and the object still exports. It is worth saying which
+    asset failed, because a misspelled ambientCG slug is otherwise silent.
+    """
+
+    if not report.errors:
+        return []
+    return [
+        f"Appearance warning: {len(report.errors)} of {report.requested_shapes} textured "
+        "surfaces could not fetch their ambientCG asset, and kept their authored color and "
+        "roughness instead:\n" + "\n".join(report.errors[:10])
+    ]
 
 
 def _without_allowance_notes(report: TestReport) -> TestReport:
@@ -434,7 +470,8 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     raw = "--raw" in args
     physics = "--physics" in args
-    args = [arg for arg in args if arg not in {"--raw", "--physics"}]
+    textures = "--textures" in args
+    args = [arg for arg in args if arg not in {"--raw", "--physics", "--textures"}]
     if len(args) != 1:
         payload = CompileResult(
             error="Usage: python -m articraft.compiler.worker <run_dir>"
@@ -444,7 +481,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload))
         return 2
 
-    payload = compile_run(Path(args[0]).resolve(), include_report=not raw, physics_enabled=physics)
+    payload = compile_run(
+        Path(args[0]).resolve(),
+        include_report=not raw,
+        physics_enabled=physics,
+        textures_enabled=textures,
+    )
     print(json.dumps(payload))
     return 0 if payload["status"] == "success" else 1
 

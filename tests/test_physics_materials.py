@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # pyright: ignore[reportAttributeAccessIssue]
 
 from articraft.sdk import BoxGeometry, Material, RigidBodyAssembly
@@ -162,17 +163,17 @@ def test_a_coating_also_supplies_the_look(tmp_path: Path) -> None:
 
 def test_textured_shapes_keep_their_physics_material(monkeypatch, tmp_path: Path) -> None:
     """The textured export path returns early and once skipped friction entirely."""
-    from articraft.sdk import ambientcg
+    from articraft.sdk import textures
 
     maps = tmp_path / "maps"
     maps.mkdir()
     color = maps / "Metal009_1K-JPG_Color.jpg"
-    color.write_bytes(b"image")
-    texture_set = ambientcg.TextureSet("Metal009", "1K", color)
+    Image.new("RGB", (8, 8), (128, 128, 128)).save(color)
+    texture_set = textures.TextureSet("Metal009", "1K", color)
     monkeypatch.setattr(
-        ambientcg,
+        textures,
         "fetch_material",
-        lambda kind: (texture_set, ambientcg.MaterialSpec("Metal009")),
+        lambda kind: (texture_set, textures.MaterialSpec("Metal009")),
     )
 
     model = RigidBodyAssembly("textured")

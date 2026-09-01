@@ -256,6 +256,42 @@ class QueuedModel(Generic[Item]):
         self.close_calls += 1
 
 
+class UnusedModel:
+    """A ``Model`` that must never be queried.
+
+    A run's critic builds its own client. Tests that script the agent's turns
+    give the critic one of these, so a scripted model is neither closed twice
+    nor asked to answer from the agent's script.
+    """
+
+    supports_images: bool = True
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def query(
+        self,
+        messages: Messages,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Response:
+        raise AssertionError("this run was not expected to ask for a review")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+def one_client(model: Any) -> Callable[..., Any]:
+    """A ``create_model`` stand-in that hands ``model`` out exactly once."""
+
+    clients = iter((model,))
+
+    def create(*_args: Any, **_kwargs: Any) -> Any:
+        return next(clients, UnusedModel())
+
+    return create
+
+
 class ScriptedModel(QueuedModel[Step]):
     """A deterministic ``Model`` that plays a script of responses.
 
@@ -885,6 +921,7 @@ def run_scenario(
     assert_exhausted: bool = True,
     on_event: Callable[[events.Event], None] | None = None,
     seed_workspace: Path | None = None,
+    new_reviewer: Callable[[], Any] | None = None,
 ) -> RunArtifacts:
     """Run the full agent loop for free and return deep-inspectable artifacts.
 
@@ -897,7 +934,9 @@ def run_scenario(
     ``assert_exhausted=False`` for open-ended or live runs. Every event also
     flows to ``on_event`` when given (the artifacts recorder always sees it
     too). Pass ``seed_workspace`` to exercise the edit loop, which starts from
-    a finished run's code instead of the stub.
+    a finished run's code instead of the stub, and ``new_reviewer`` to answer
+    the `critic` tool -- a factory for another scripted model, judging
+    appearance for free.
     """
     if model is None:
         if script is None:
@@ -916,7 +955,13 @@ def run_scenario(
         if on_event is not None:
             on_event(event)
 
-    agent = Agent(model, env, max_turns=max_turns, on_event=callback)
+    agent = Agent(
+        model,
+        env,
+        max_turns=max_turns,
+        on_event=callback,
+        new_reviewer=new_reviewer if new_reviewer is not None else UnusedModel,
+    )
     result = run(agent.run(prompt, run_id=run_id, seed_workspace=seed_workspace))
     if assert_exhausted:
         check = getattr(model, "assert_exhausted", None)
