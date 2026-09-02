@@ -91,8 +91,11 @@ Choose the broad views and close views that will show the result clearly. Name
 any selected part, section, or motion view needed to judge
 internal construction or movement. Every validation brief must include at least
 one overall model view. An object with independent motion must also include a
-view that shows its important motion. Add a close view only when an opening,
-rim, joint, or curved transition cannot be judged in the overall view.
+view that shows its important motion, and that view must pose every independent
+joint at once. One open door out of three leaves the other two hinges unseen.
+Aim it from the side the moving parts swing away from, so an opened part does
+not cover the interior it was opened to reveal. Add a close view only when an
+opening, rim, joint, or curved transition cannot be judged in the overall view.
 
 Build a complete first version, then write `previews.py`. Import `object_model`
 from `main` and use the public `render_view(...)` function. Render every view
@@ -106,6 +109,11 @@ renderer is not visual inspection. Check the silhouette, proportions, part
 transitions, repeated features, supports, clearances, and important mechanism
 poses. Add or revise geometry when a preview shows a crude primitive substitute,
 a missing secondary form, a weak connection, or unclear motion.
+
+Read each image against the description you will register for it. A view whose
+caption says it exposes the shelves and hinges, and which shows a door covering
+them, is not evidence for anything. Re-aim it or pose it differently and render
+again; both cost one line.
 
 Judge appearance with `critic`, after a successful compile. It path-traces the
 exported USDZ, writes the images to `review/renders/`, and grades what the
