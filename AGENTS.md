@@ -88,6 +88,36 @@ renders against it on material alone. It also refuses a compile the workspace
 has moved past, because a USDZ built before the last edit shows a surface the
 script no longer authors.
 
+Two things go in beside the images, because looking was not enough on its own.
+The first is the colors both sides measure: each image's pixels grouped by color
+with the share of the frame each covers. A judge reads a photograph's brighter
+exposure as a warmer surface and asks for a hue that is already there, which
+cost one run all three of its reviews on an oak that measured the same hue as
+its reference to within half a degree. One average over the frame would not have
+caught it either, since oak, black pulls, and a gray floor blend into a color no
+part of the object has. The groups are evidence and not a verdict: `critic.md`
+says to believe the images where the two disagree.
+
+The second is the record of the earlier reviews: what each asked for, and the
+material lines of `main.py` that moved after it, kept in `review/renders/<n>/`.
+Every review still gets a client that has seen nothing, so the record is the
+only way one learns the others happened. Without it a review cannot tell it is
+undoing the last one, and a run went to a finer grain, then a coarser one, then
+finer again, and finished where it started. The diff is filtered to material
+lines on purpose, because handing a judge told to ignore shape a geometry edit
+invites it to talk about shape.
+
+Continuous properties are the other half of that oscillation. A review can say
+which way to turn a dial but never how far, so `critic.md` tells it to raise
+roughness, clear coat, pattern contrast, and texture size only when a surface is
+plainly wrong, and to let a near miss pass.
+
+The reviews are a budget and not a quota. A passing review ends the appearance
+work, and the tool refuses a review of a `main.py` that has not changed since
+the last one. A run that had already passed asked again without editing, and the
+same USDZ came back a point higher: that difference is the judge moving, not the
+object, and it cost a path trace and a review to learn it.
+
 The renders are an instrument, so the rig is calibrated rather than tuned by
 eye: a surface renders at the brightness it was authored with. Two settings
 broke that silently. Blender's default AgX view transform lifted a 0.20 surface

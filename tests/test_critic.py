@@ -95,6 +95,13 @@ def _mark_compiled(context: ToolContext) -> None:
     context.successful_compile_digest = workspace_digest(context.workspace)
 
 
+def _revise(context: ToolContext, note: str) -> None:
+    """Author a new version and compile it, which is what earns another review."""
+
+    (context.workspace / "main.py").write_text(f"# {note}\n")
+    _mark_compiled(context)
+
+
 def test_critic_renders_the_exported_model_and_returns_a_verdict(
     tmp_path: Path, blender: FakeBlender
 ) -> None:
@@ -231,7 +238,8 @@ def test_each_review_gets_a_client_that_has_seen_nothing(
     context = _context(tmp_path)
     context.new_reviewer = new_reviewer
 
-    for _ in range(2):
+    for attempt in range(2):
+        _revise(context, f"version {attempt}")
         _run(get("critic").run(context, {"goal": "steel"}))
 
     assert len(built) == 2
@@ -284,6 +292,64 @@ def test_the_reference_photograph_goes_to_the_critic_with_the_renders(
     assert result.output["rendered"] == ["review/renders/1/hero.png", "review/renders/1/front.png"]
 
 
+def test_the_critic_is_told_the_colors_both_sides_measure(
+    tmp_path: Path, blender: FakeBlender
+) -> None:
+    """A judge reads a photograph's brighter exposure as a warmer surface.
+
+    One run spent all three of its reviews moving an oak that measured the same
+    hue as its reference to within half a degree. Measuring both sides costs
+    nothing and settles the question the eye keeps getting wrong.
+    """
+
+    reviewer = FakeReviewer(json.dumps({"pass": True, "score": 9}))
+    context = _context(tmp_path, reviewer)
+    # The same hue as the render the fake writes, two steps lighter.
+    Image.new("RGB", (96, 72), (150, 110, 70)).save(context.workspace / "reference.png")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+
+    prompt = reviewer.queries[0][0]["content"][0]["text"]
+    renders, photograph = prompt.split("the photograph:\n")
+    assert "100 percent: hue 30 degrees, saturation 50 percent, lightness 35 percent" in renders
+    assert "100 percent: hue 30 degrees, saturation 53 percent, lightness 43 percent" in photograph
+
+
+def test_each_material_gets_its_own_measured_group(tmp_path: Path, blender: FakeBlender) -> None:
+    """One average over the frame is a color no part of the object has.
+
+    Oak, black pulls, and a gray floor blend into a single number that answers
+    nothing, so the colors are grouped and the judge matches the wood against
+    the wood.
+    """
+
+    reviewer = FakeReviewer(json.dumps({"pass": True, "score": 9}))
+    context = _context(tmp_path, reviewer)
+    reference = Image.new("RGB", (100, 100), (150, 110, 70))
+    reference.paste(Image.new("RGB", (100, 25), (18, 18, 20)), (0, 75))
+    reference.save(context.workspace / "reference.png")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet with black pulls"}))
+
+    photograph = reviewer.queries[0][0]["content"][0]["text"].split("the photograph:\n")[1]
+    assert "75 percent: hue 30 degrees" in photograph
+    # A near-black pull carries no hue worth reading, so it is placed by lightness.
+    assert "25 percent: neutral, lightness 7 percent" in photograph
+
+
+def test_a_run_without_a_reference_photograph_measures_nothing(
+    tmp_path: Path, blender: FakeBlender
+) -> None:
+    """Colors read off the renders alone say nothing about what they should be."""
+
+    reviewer = FakeReviewer(json.dumps({"pass": True, "score": 9}))
+    _run(get("critic").run(_context(tmp_path, reviewer), {"goal": "steel"}))
+
+    assert "Colors measured" not in reviewer.queries[0][0]["content"][0]["text"]
+
+
 def test_a_run_without_textures_is_not_asked_about_them(
     tmp_path: Path, blender: FakeBlender
 ) -> None:
@@ -323,7 +389,9 @@ def test_each_review_keeps_its_own_renders(tmp_path: Path, blender: FakeBlender)
         FakeReviewer(*[json.dumps({"pass": False, "score": 5})] * 2),
     )
 
+    _revise(context, "first version")
     _run(get("critic").run(context, {"goal": "steel"}))
+    _revise(context, "second version")
     _run(get("critic").run(context, {"goal": "steel"}))
 
     renders = context.workspace / "review" / "renders"
@@ -341,14 +409,116 @@ def test_a_run_gets_a_fixed_number_of_reviews(tmp_path: Path, blender: FakeBlend
     replies = [json.dumps({"pass": False, "score": score}) for score in (4, 3, 4)]
     context = _context(tmp_path, FakeReviewer(*replies))
 
-    for _ in range(3):
+    for attempt in range(3):
+        _revise(context, f"version {attempt}")
         _run(get("critic").run(context, {"goal": "steel"}))
+    _revise(context, "one more version")
     refused = _run(get("critic").run(context, {"goal": "steel"}))
 
     assert context.review_scores == [4.0, 3.0, 4.0]
     assert "3 reviews are used up" in refused.output["error"]
     assert "4, 3, 4" in refused.output["error"]
     assert len(blender.calls) == 3
+
+
+def test_a_review_is_told_what_the_earlier_ones_asked_for(
+    tmp_path: Path, blender: FakeBlender
+) -> None:
+    """A review cannot see the ones before it, so it cannot tell it is undoing one.
+
+    A run asked for a finer grain, then a coarser one, then a finer one again,
+    and finished where it started with all three reviews spent.
+    """
+
+    reviewer = FakeReviewer(
+        json.dumps({"pass": False, "score": 5, "issues": ["the grain is too coarse"]}),
+        json.dumps({"pass": False, "score": 6, "issues": ["the pulls are flat"]}),
+    )
+    context = _context(tmp_path, reviewer)
+    (context.workspace / "main.py").write_text("OAK = Material(pattern_strength=0.52)\n")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+    (context.workspace / "main.py").write_text("OAK = Material(pattern_strength=0.42)\n")
+    _mark_compiled(context)
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+
+    first, second = (query[0]["content"][0]["text"] for query in reviewer.queries)
+    assert "Earlier reviews" not in first
+    assert "Review 1 scored 5 and asked for:" in second
+    assert "the grain is too coarse" in second
+    # The dial it moved, so a review about to move it back can see that.
+    assert "-OAK = Material(pattern_strength=0.52)" in second
+    assert "+OAK = Material(pattern_strength=0.42)" in second
+
+
+def test_a_second_look_at_an_unedited_script_is_refused(
+    tmp_path: Path, blender: FakeBlender
+) -> None:
+    """A run whose review passed asked for another without changing anything.
+
+    The same USDZ came back a point higher, which is the judge moving and not
+    the object, and it cost a path trace and a review to find that out.
+    """
+
+    reviewer = FakeReviewer(
+        json.dumps({"pass": True, "score": 8, "issues": []}),
+        json.dumps({"pass": True, "score": 9, "issues": []}),
+    )
+    context = _context(tmp_path, reviewer)
+    (context.workspace / "main.py").write_text("OAK = Material(roughness=0.5)\n")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+    refused = _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+
+    assert "has not changed since review 1" in refused.output["error"]
+    assert "finish" in refused.output["error"]
+    # It costs nothing: no second render, and the reviewer was never asked.
+    assert len(blender.calls) == 1
+    assert len(reviewer.queries) == 1
+    assert context.review_scores == [8.0]
+
+
+def test_an_edited_script_may_be_reviewed_again(tmp_path: Path, blender: FakeBlender) -> None:
+    """The refusal is about an unchanged object, not about asking twice."""
+
+    reviewer = FakeReviewer(
+        json.dumps({"pass": False, "score": 6, "issues": ["the oak is flat"]}),
+        json.dumps({"pass": True, "score": 8, "issues": []}),
+    )
+    context = _context(tmp_path, reviewer)
+    (context.workspace / "main.py").write_text("OAK = Material(roughness=0.5)\n")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+    (context.workspace / "main.py").write_text("OAK = Material(roughness=0.3)\n")
+    _mark_compiled(context)
+    second = _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+
+    assert second.output["score"] == 8.0
+    assert context.review_scores == [6.0, 8.0]
+
+
+def test_a_shape_edit_stays_out_of_the_record(tmp_path: Path, blender: FakeBlender) -> None:
+    """This judge is told to say nothing about shape, so it is not shown any."""
+
+    reviewer = FakeReviewer(
+        json.dumps({"pass": False, "score": 5, "issues": ["the oak is pale"]}),
+        json.dumps({"pass": True, "score": 8}),
+    )
+    context = _context(tmp_path, reviewer)
+    (context.workspace / "main.py").write_text("DOOR_WIDTH = 0.40\nOAK = Material(roughness=0.5)\n")
+    _mark_compiled(context)
+
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+    (context.workspace / "main.py").write_text("DOOR_WIDTH = 0.55\nOAK = Material(roughness=0.3)\n")
+    _mark_compiled(context)
+    _run(get("critic").run(context, {"goal": "an oak cabinet"}))
+
+    second = reviewer.queries[1][0]["content"][0]["text"]
+    assert "roughness=0.3" in second
+    assert "DOOR_WIDTH" not in second
 
 
 def test_the_script_behind_the_best_score_is_kept(tmp_path: Path, blender: FakeBlender) -> None:

@@ -28,6 +28,24 @@ darker as a whole, and never ask for a color to be lightened or desaturated on
 that basis alone. Raise lightness only when a part is wrong relative to the
 other parts of the same object.
 
+The colors in both are measured for you, and the two lists are printed after the
+image list. Each groups an image's pixels by color and gives the share of the
+frame that group covers. Nothing in them says which group is which part: a large
+neutral group is usually the studio floor or the wall behind the object, and you
+are the one who can see which is which.
+
+Read them as evidence beside the images, never as the verdict. Grouping is
+approximate, a photograph carries its own light and its own background, and a
+small part can be too little of the frame to appear at all. Where a list plainly
+disagrees with what you can see, believe your eyes.
+
+Where it agrees, use it to check yourself before you name a color. Find the
+group in each list that covers the surface you are about to raise, and compare
+those two. When their hues sit within a few degrees, you are looking at the same
+color, so say nothing about hue; a surface that reads darker at the same hue and
+saturation is a lighting difference, which is the one reading you were told to
+discard.
+
 Compare nothing else against the photograph. It was shot somewhere else, with
 its own framing and background, and the object in it may have a different shape
 or a different number of parts. None of that is a material problem. Where the
@@ -58,6 +76,27 @@ What you are looking for:
 - A texture running the wrong way. Grain follows the long axis of a board, and
   turns with a stile or a rail; brushed metal runs along the part.
 <!-- /textures -->
+
+Close enough is right, on anything continuous. Roughness, clear coat, pattern
+contrast, and texture size are dials, and you can say which way to turn one but
+never how far. You also cannot see the reviews before yours. Two reviews nudging
+the same dial from opposite sides leave the object where it started and spend
+the run doing it, which is how a review that asks for a finer grain is followed
+by one that asks for a coarser one. So raise these only when a surface is
+plainly wrong, not when it is merely not quite the same: a grain at twice or
+half the size it should be, a surface that reads glossy where it should be
+matte, a pattern so strong it looks printed on or so faint the surface reads as
+flat color. A near miss on a dial is not an issue. Leave it alone and let the
+surface pass.
+
+When earlier reviews exist, what they asked for and which surfaces moved after
+them are listed at the end. It is the only account of them you get, since you
+did not see their images. Read it before you raise anything. If a review already
+turned a dial and you are about to turn it back, the surface is close enough and
+the two of you are trading it between you: leave it alone. If the record shows
+the author did what a review asked, judge the result in front of you rather than
+asking again. Raise a point already raised only when the record shows nothing
+was done about it.
 
 Reply as JSON, and nothing else:
 
@@ -92,6 +131,7 @@ revision, so the same list comes back review after review and the object drifts
 while chasing it. If the only thing wrong with a surface is something you cannot
 name a control for, leave it out and say the surface passes.
 
-Be strict about what is fixable, and let near misses fail. Score 8 or above only
-when the surfaces genuinely read as the materials they claim. Return an empty
-issue list when it passes.
+Be strict about what is fixable, and let a surface that reads as the wrong
+substance fail. Score 8 or above when the surfaces genuinely read as the
+materials they claim, whether or not every dial is exactly where you would put
+it. Return an empty issue list when it passes.

@@ -115,12 +115,15 @@ question on them. Give `critic` a sentence naming what the object is made of,
 open the renders it wrote with `view_image`, and treat its issues as design
 evidence rather than instructions.
 
-A run gets three reviews. Spend them: fix what a review names, then ask again.
-Stop early when the score stops climbing, and stop acting on an issue you cannot
-reach with the seven surface controls -- an issue outside them survives every
-revision, so chasing it moves the object without ever answering it. When a pass
-scores worse than an earlier one, take the earlier version back from
-`review/best_main.py` rather than continuing from the worse one.
+A run gets three reviews. Ask for one, fix what it names, then ask again. They
+are a budget, not a quota. A review that passes with no issues ends the
+appearance work: asking again about an object you have not changed grades the
+same surfaces twice and returns the difference between two readings of one
+thing. Stop early too when the score stops climbing, and stop acting on an issue
+you cannot reach with the seven surface controls -- an issue outside them
+survives every revision, so chasing it moves the object without ever answering
+it. When a pass scores worse than an earlier one, take the earlier version back
+from `review/best_main.py` rather than continuing from the worse one.
 
 Register the final useful preview files with `attach_artifact(...)` in
 `run_tests()`. The compiler does not render or copy images.
@@ -134,10 +137,13 @@ edit.
 
 <image_prompt>
 A successful compile does not replace visual inspection. If compile feedback or
-an edit changes the model, run `previews.py` again and inspect every affected
-image before the next compile. Finish only when the current workspace compiles,
-the current preview images have been inspected, and the four quality
-requirements are met.
+an edit changes the geometry, run `previews.py` again and inspect every affected
+image before the next compile. Appearance work is different. Once the shape is
+settled, judge every material change on the renders `critic` writes. Leave the
+previews alone: the rasterizer draws no grain and no real light, so a render
+answers everything a preview could. Finish only when the current workspace
+compiles, the previews match the current geometry and have been inspected, and
+the five quality requirements are met.
 </image_prompt>
 Finish only when the current workspace compiles and the five quality requirements
 are met.
